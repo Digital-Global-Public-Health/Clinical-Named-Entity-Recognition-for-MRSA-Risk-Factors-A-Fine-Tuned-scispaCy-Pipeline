@@ -1,0 +1,540 @@
+# src/cli.py
+"""
+Command-line interface for the MRSA NLP NER-based pipeline.
+
+Usage (from project root, with conda env activated):
+
+    python -m src.cli --help
+
+    # Step 1 — build cohort + mine notes
+    python -m src.cli build-cohort [OPTIONS]
+
+    # Step 2 — preprocess raw notes
+    python -m src.cli preprocess [OPTIONS]
+
+    # Step 3 — annotate a sample for NER training (exports guidelines)
+    python -m src.cli prepare-annotations [OPTIONS]
+
+    # Step 4 — train / fine-tune the NER model
+    python -m src.cli train [OPTIONS]
+
+    # Step 5 — run NER extraction on all notes
+    python -m src.cli extract [OPTIONS]
+
+    # Step 6 — aggregate NER features to visit level
+    python -m src.cli aggregate-features [OPTIONS]
+
+    # Step 7 — evaluate extraction quality
+    python -m src.cli evaluate [OPTIONS]
+
+    # Run the full pipeline end-to-end
+    python -m src.cli run-pipeline [OPTIONS]
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich import print
+
+from src.utils_logging import configure_logging, logger, make_run_dir, save_config_snapshot, log_timing
+from src.utils_db import connect_hana
+from src.utils_seed import set_seed, GLOBAL_SEED
+from src.cohort.cohort_builder import CohortConfig, CohortBuilder
+from src.preprocessing.note_preprocessor import NERPreprocessorConfig, NERNotePreprocessor
+from src.ner.annotation_schema import AnnotationSchemaConfig, AnnotationSchema
+from src.ner.model_trainer import NERTrainerConfig, NERModelTrainer
+from src.ner.ner_extractor import NERExtractorConfig, NERExtractor
+from src.features.feature_aggregator import NERAggregatorConfig, NERFeatureAggregator
+from src.evaluation.evaluator import NEREvaluatorConfig, NEREvaluator
+
+app = typer.Typer(
+    add_completion=False,
+    help="MRSA NLP — NER-based clinical note extraction and model training pipeline.",
+)
+
+
+# ---------------------------------------------------------------------------
+# Global callback: configure logging and seeding
+# ---------------------------------------------------------------------------
+
+@app.callback()
+def _configure(
+    ctx: typer.Context,
+    log_level: str = typer.Option(
+        "INFO", "--log-level", help="Logging level: DEBUG | INFO | WARNING | ERROR"
+    ),
+    seed: int = typer.Option(
+        GLOBAL_SEED, "--seed", help=f"Random seed for reproducibility (default: {GLOBAL_SEED})"
+    ),
+) -> None:
+    """Global CLI options, logging setup, and seed initialization."""
+    run_name = ctx.invoked_subcommand or "cli"
+    run_dir = configure_logging(log_level, run_name=run_name)
+    set_seed(seed)
+    logger.info("Log level : %s", log_level.upper())
+    logger.info("Seed      : %d", seed)
+    logger.info("Run dir   : %s", run_dir)
+
+
+# ---------------------------------------------------------------------------
+# 1. build-cohort
+# ---------------------------------------------------------------------------
+
+@app.command(help="Load the MRSA cohort from mrsa_risk_predictions and mine notes from CDMPHI.NOTES.")
+@log_timing
+def build_cohort(
+    schema: str = typer.Option("CDMPHI", help="HANA schema name."),
+    chunk_size: int = typer.Option(500, help="Persons per note-mining chunk."),
+    min_note_date: str = typer.Option("2014-07-14", help="Earliest note date (YYYY-MM-DD)."),
+    debug: bool = typer.Option(False, "--debug/--no-debug", help="Debug mode: limit to a small sample."),
+    debug_n_persons: int = typer.Option(20, help="Persons to process in debug mode."),
+    seed: int = typer.Option(GLOBAL_SEED, "--seed", help=f"Random seed (passed to mrsa_risk_predictions cohort loader; default: {GLOBAL_SEED})."),
+) -> None:
+    """
+    Pipeline Step 1 — Build cohort and mine clinical notes.
+
+    Reads the matched-pairs cohort from mrsa_risk_predictions, resolves MRNs,
+    saves mrsa_cohort_person_list.parquet, then fetches notes from CDMPHI.NOTES
+    in person-level chunks (resume-safe).
+
+    The seed is used in the underlying cohort builder for reproducible control sampling.
+    """
+    cfg = CohortConfig(
+        schema=schema,
+        chunk_size=chunk_size,
+        min_note_date=min_note_date,
+        debug=debug,
+        debug_n_persons=debug_n_persons,
+    )
+
+    save_config_snapshot(
+        cfg.__dict__ | {"pipeline_step": "build_cohort"},
+        run_dir=_current_run_dir(),
+    )
+
+    conn = connect_hana()
+    builder = CohortBuilder(cfg, conn)
+    person_df = builder.run()
+
+    logger.info(
+        "Cohort built: %d persons  (%d cases, %d controls)",
+        len(person_df) if person_df is not None else 0,
+        (person_df["LABEL"] == 1).sum() if person_df is not None else 0,
+        (person_df["LABEL"] == 0).sum() if person_df is not None else 0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2. preprocess
+# ---------------------------------------------------------------------------
+
+@app.command(help="Clean and normalise raw clinical note chunks for NER inference.")
+@log_timing
+def preprocess(
+    raw_notes_dir: Path = typer.Option(
+        Path("data/interim/airms/notes"),
+        help="Directory of raw note chunk Parquet files.",
+    ),
+    out_dir: Path = typer.Option(
+        Path("data/interim/airms/notes_preprocessed"),
+        help="Directory for preprocessed note chunks.",
+    ),
+    max_tokens: int = typer.Option(
+        0, help="Max tokens per note for BERT windowing (0 = no windowing)."
+    ),
+    expand_abbrev: bool = typer.Option(True, "--expand-abbrev/--no-expand-abbrev"),
+    debug: bool = typer.Option(False, "--debug/--no-debug"),
+    debug_n_notes: int = typer.Option(200),
+) -> None:
+    """
+    Pipeline Step 2 — Preprocess raw note chunks.
+
+    Applies whitespace normalisation and abbreviation expansion.  Optionally
+    windows long notes for BERT 512-token limit.  Skips already-processed
+    chunks (resume-safe).
+
+    Note: lowercase is disabled by default to preserve case for BERT models.
+    """
+    cfg = NERPreprocessorConfig(
+        raw_notes_dir=raw_notes_dir,
+        out_dir=out_dir,
+        max_tokens_per_note=max_tokens,
+        expand_abbreviations=expand_abbrev,
+        debug=debug,
+        debug_n_notes=debug_n_notes,
+    )
+
+    save_config_snapshot(
+        cfg.__dict__ | {"pipeline_step": "preprocess"},
+        run_dir=_current_run_dir(),
+    )
+
+    pp = NERNotePreprocessor(cfg)
+    pp.run()
+
+
+# ---------------------------------------------------------------------------
+# 3. prepare-annotations
+# ---------------------------------------------------------------------------
+
+@app.command(help="Export annotation schema and guidelines for NER training data creation.")
+@log_timing
+def prepare_annotations(
+    entity_types: str = typer.Option(
+        "DISEASE,MEDICATION,PROCEDURE",
+        help="Comma-separated entity types to include.",
+    ),
+    include_severity: bool = typer.Option(
+        False, "--include-severity", help="Add optional SEVERITY entity type."
+    ),
+    guidelines_out: Path = typer.Option(
+        Path("annotations/annotation_guidelines.md"),
+        help="Where to write the Markdown guidelines document.",
+    ),
+    schema_json_out: Optional[Path] = typer.Option(
+        None, help="Where to write schema.json for annotation tools (optional)."
+    ),
+    debug: bool = typer.Option(False, "--debug/--no-debug"),
+) -> None:
+    """
+    Pipeline Step 3 — Prepare annotation resources.
+
+    Exports the entity annotation schema to a Markdown guidelines document
+    and optionally a JSON schema file for use with labelling tools (e.g. Label
+    Studio, Prodigy).  Human annotators should read the guidelines before
+    creating training data.
+    """
+    labels = [t.strip() for t in entity_types.split(",")]
+    if include_severity and "SEVERITY" not in labels:
+        labels.append("SEVERITY")
+
+    cfg = AnnotationSchemaConfig(
+        entity_types=labels,
+        guidelines_out_path=guidelines_out,
+        debug=debug,
+    )
+
+    save_config_snapshot(
+        {"entity_types": labels, "guidelines_out": str(guidelines_out), "pipeline_step": "prepare_annotations"},
+        run_dir=_current_run_dir(),
+    )
+
+    schema = AnnotationSchema(cfg)
+    guidelines_path = schema.export_guidelines()
+    logger.info("Guidelines written to: %s", guidelines_path)
+
+    if schema_json_out:
+        json_path = schema.export_schema_json(schema_json_out)
+        logger.info("Schema JSON written to: %s", json_path)
+
+    logger.info("Configured entity types: %s", schema.get_entity_labels())
+
+
+# ---------------------------------------------------------------------------
+# 4. train
+# ---------------------------------------------------------------------------
+
+@app.command(help="Train or fine-tune a NER model on annotated clinical notes.")
+@log_timing
+def train(
+    track: str = typer.Option(
+        "spacy",
+        help="Training track: 'spacy' (scispaCy fine-tuning) or 'hf' (BioClinicalBERT).",
+    ),
+    base_model: str = typer.Option(
+        "en_core_sci_sm",
+        help="Base model: spaCy — 'en_core_sci_sm'/'en_core_sci_lg'; "
+             "HF — 'emilyalsentzer/Bio_ClinicalBERT'.",
+    ),
+    train_data: Path = typer.Option(
+        Path("annotations/train.spacy"),
+        help="Training annotations (.spacy DocBin or CSV).",
+    ),
+    val_data: Path = typer.Option(
+        Path("annotations/val.spacy"),
+        help="Validation annotations.",
+    ),
+    test_data: Path = typer.Option(
+        Path("annotations/test.spacy"),
+        help="Held-out test annotations (evaluated only at end).",
+    ),
+    model_out_dir: Path = typer.Option(
+        Path("models/airms_ner_v1.0"),
+        help="Directory to save model checkpoints and final model.",
+    ),
+    n_epochs: int = typer.Option(30, help="Number of training epochs."),
+    batch_size: int = typer.Option(16, help="Mini-batch size."),
+    dropout: float = typer.Option(0.3, help="Dropout rate."),
+    learning_rate: float = typer.Option(1e-3, help="Initial learning rate."),
+    device: str = typer.Option("cpu", help="Device: 'cpu', 'gpu', or 'cuda:0'."),
+    seed: int = typer.Option(GLOBAL_SEED, help=f"Random seed for reproducibility (default: {GLOBAL_SEED})."),
+    debug: bool = typer.Option(False, "--debug/--no-debug"),
+    debug_n_examples: int = typer.Option(50, help="Max training examples in debug mode."),
+) -> None:
+    """
+    Pipeline Step 4 — NER model training / fine-tuning.
+
+    Track A (spaCy): Fine-tunes en_core_sci_sm on annotated clinical notes
+    using spaCy's training loop with early stopping.
+
+    Track B (HF): Fine-tunes Bio_ClinicalBERT with a token-classification head
+    using HuggingFace Transformers + seqeval metrics.  Requires GPU on Minerva.
+    """
+    _, run_dir = make_run_dir(f"train_{track}")
+
+    cfg = NERTrainerConfig(
+        track=track,
+        base_model=base_model,
+        train_data_path=train_data,
+        val_data_path=val_data,
+        test_data_path=test_data,
+        model_out_dir=model_out_dir,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        dropout=dropout,
+        learning_rate=learning_rate,
+        device=device,
+        seed=seed,
+        debug=debug,
+        debug_n_examples=debug_n_examples,
+    )
+
+    save_config_snapshot(cfg.__dict__ | {"pipeline_step": "train"}, run_dir)
+
+    schema = AnnotationSchema(AnnotationSchemaConfig())
+    trainer = NERModelTrainer(cfg, schema, run_dir)
+    model = trainer.run()
+
+    logger.info("Training complete.  Model saved to: %s", model_out_dir)
+
+
+# ---------------------------------------------------------------------------
+# 5. extract
+# ---------------------------------------------------------------------------
+
+@app.command(help="Run NER inference on preprocessed note chunks.")
+@log_timing
+def extract(
+    preprocessed_dir: Path = typer.Option(
+        Path("data/interim/airms/notes_preprocessed"),
+        help="Directory of preprocessed note chunk Parquet files.",
+    ),
+    out_dir: Path = typer.Option(
+        Path("data/interim/airms/ner_extractions"),
+        help="Directory for per-note NER extraction results.",
+    ),
+    model_path: Path = typer.Option(
+        Path("models/airms_ner_v1.0"),
+        help="Path to the trained NER model directory.",
+    ),
+    model_track: str = typer.Option(
+        "spacy", help="Model type: 'spacy' or 'hf'."
+    ),
+    batch_size: int = typer.Option(32, help="Notes per inference batch."),
+    no_negation: bool = typer.Option(
+        False, "--no-negation", help="Disable negation detection."
+    ),
+    negation_window: int = typer.Option(5, help="Negation look-back window (tokens)."),
+    save_spans: bool = typer.Option(
+        False, "--save-spans", help="Store raw entity span text in output."
+    ),
+    debug: bool = typer.Option(False, "--debug/--no-debug"),
+    debug_n_notes: int = typer.Option(100),
+) -> None:
+    """
+    Pipeline Step 5 — NER extraction.
+
+    Loads the trained NER model and runs batch inference on all preprocessed
+    note chunks.  Skips already-processed chunks (resume-safe).  Detected
+    entities are flagged for negation before saving.
+    """
+    cfg = NERExtractorConfig(
+        preprocessed_notes_dir=preprocessed_dir,
+        out_dir=out_dir,
+        model_path=model_path,
+        model_track=model_track,
+        batch_size=batch_size,
+        apply_negation=not no_negation,
+        negation_window_tokens=negation_window,
+        save_entity_spans=save_spans,
+        debug=debug,
+        debug_n_notes=debug_n_notes,
+    )
+
+    save_config_snapshot(
+        cfg.__dict__ | {"pipeline_step": "extract"},
+        run_dir=_current_run_dir(),
+    )
+
+    extractor = NERExtractor(cfg)
+    extractor.load_model()
+    extractor.run()
+
+
+# ---------------------------------------------------------------------------
+# 6. aggregate-features
+# ---------------------------------------------------------------------------
+
+@app.command(help="Aggregate per-note NER extractions to visit-level feature matrix.")
+@log_timing
+def aggregate_features(
+    extractions_dir: Path = typer.Option(
+        Path("data/interim/airms/ner_extractions"),
+        help="Directory of NER extraction chunk Parquet files.",
+    ),
+    cohort_path: Path = typer.Option(
+        Path("data/interim/airms/mrsa_cohort_person_list.parquet"),
+        help="Cohort person list (PERSON_ID, MRN, LABEL).",
+    ),
+    level: str = typer.Option("visit", help="Aggregation level: 'visit' or 'person'."),
+    include_negated: bool = typer.Option(
+        True, "--include-negated/--no-include-negated",
+        help="Include has_{entity}_negated features.",
+    ),
+    include_counts: bool = typer.Option(
+        True, "--include-counts/--no-include-counts",
+        help="Include count_{entity} features.",
+    ),
+    debug: bool = typer.Option(False, "--debug/--no-debug"),
+) -> None:
+    """
+    Pipeline Step 6 — NER feature engineering and aggregation.
+
+    Aggregates per-note entity counts to visit level (MAX for binary features,
+    SUM for count features), merges with cohort labels, and saves a
+    training-ready CSV + Parquet.
+    """
+    _, run_dir = make_run_dir("ner_feature_aggregation")
+
+    cfg = NERAggregatorConfig(
+        extractions_dir=extractions_dir,
+        cohort_person_list_path=cohort_path,
+        out_dir=run_dir,
+        aggregation_level=level,
+        include_negated_features=include_negated,
+        include_entity_counts=include_counts,
+        debug=debug,
+    )
+
+    save_config_snapshot(cfg.__dict__ | {"pipeline_step": "aggregate_features"}, run_dir)
+
+    agg = NERFeatureAggregator(cfg, run_dir)
+    feature_df = agg.run()
+
+    logger.info("NER feature matrix shape: %s", feature_df.shape if feature_df is not None else "None")
+
+
+# ---------------------------------------------------------------------------
+# 7. evaluate
+# ---------------------------------------------------------------------------
+
+@app.command(help="Evaluate NER extraction quality and generate visual reports.")
+@log_timing
+def evaluate(
+    features_path: Path = typer.Argument(..., help="Path to the NER feature matrix CSV."),
+    test_annotations: Optional[Path] = typer.Option(
+        None, help="Held-out test annotation file (.spacy or CSV) for entity-level P/R/F1."
+    ),
+    rule_features_path: Optional[Path] = typer.Option(
+        None, help="Rule-based feature matrix CSV for NER-vs-rules comparison (optional)."
+    ),
+    target_f1: float = typer.Option(0.70, help="Minimum per-entity-type F1 pass threshold."),
+    debug: bool = typer.Option(False, "--debug/--no-debug"),
+) -> None:
+    """
+    Pipeline Step 7 — Evaluation and visualisation.
+
+    Computes NER feature prevalence by LABEL.  If test annotations are
+    provided, computes entity-level precision / recall / F1 using seqeval.
+    Optionally compares NER features against rule-based features.
+    Saves charts and a plain-text validation report.
+    """
+    _, run_dir = make_run_dir("ner_evaluation")
+
+    cfg = NEREvaluatorConfig(
+        features_path=features_path,
+        test_annotations_path=test_annotations,
+        rule_features_path=rule_features_path,
+        out_dir=run_dir / "evaluation",
+        target_f1=target_f1,
+        debug=debug,
+    )
+
+    save_config_snapshot(cfg.__dict__ | {"pipeline_step": "evaluate"}, run_dir)
+
+    evaluator = NEREvaluator(cfg, run_dir)
+    evaluator.run()
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline (run all steps in order)
+# ---------------------------------------------------------------------------
+
+@app.command(help="Run the complete NER pipeline end-to-end.")
+@log_timing
+def run_pipeline(
+    schema: str = typer.Option("CDMPHI"),
+    model_path: Path = typer.Option(Path("models/airms_ner_v1.0")),
+    model_track: str = typer.Option("spacy"),
+    skip_cohort: bool = typer.Option(False, "--skip-cohort", help="Skip cohort building (notes exist)."),
+    skip_preprocess: bool = typer.Option(False, "--skip-preprocess"),
+    skip_train: bool = typer.Option(False, "--skip-train", help="Skip training (use existing model)."),
+    skip_extract: bool = typer.Option(False, "--skip-extract"),
+    debug: bool = typer.Option(False, "--debug/--no-debug"),
+) -> None:
+    """
+    Run all NER pipeline steps sequentially.
+
+    Steps: build-cohort → preprocess → train → extract → aggregate-features
+    Use --skip-* flags to resume from a specific step.
+    """
+    _, run_dir = make_run_dir("ner_full_pipeline")
+    logger.info("Full NER pipeline run dir: %s", run_dir)
+
+    if not skip_cohort:
+        logger.info("=== Step 1/5: build-cohort ===")
+        cfg_cohort = CohortConfig(schema=schema, debug=debug)
+        conn = connect_hana()
+        CohortBuilder(cfg_cohort, conn).run()
+
+    if not skip_preprocess:
+        logger.info("=== Step 2/5: preprocess ===")
+        NERNotePreprocessor(NERPreprocessorConfig(debug=debug)).run()
+
+    if not skip_train:
+        logger.info("=== Step 3/5: train ===")
+        schema_obj = AnnotationSchema(AnnotationSchemaConfig())
+        NERModelTrainer(
+            NERTrainerConfig(model_track=model_track, debug=debug),
+            schema_obj,
+            run_dir,
+        ).run()
+
+    if not skip_extract:
+        logger.info("=== Step 4/5: extract ===")
+        ext = NERExtractor(NERExtractorConfig(model_path=model_path, model_track=model_track, debug=debug))
+        ext.load_model()
+        ext.run()
+
+    logger.info("=== Step 5/5: aggregate-features ===")
+    NERFeatureAggregator(NERAggregatorConfig(debug=debug), run_dir).run()
+
+    logger.info("NER pipeline complete.  Run dir: %s", run_dir)
+
+
+# ---------------------------------------------------------------------------
+# Helper: retrieve current run dir set by configure_logging
+# ---------------------------------------------------------------------------
+
+def _current_run_dir() -> Path:
+    """Return the run directory established by configure_logging."""
+    from src.utils_logging import LOG_RUN_DIR
+    return LOG_RUN_DIR or Path("outputs")
+
+
+if __name__ == "__main__":
+    configure_logging("INFO", run_name="cli")
+    app()
