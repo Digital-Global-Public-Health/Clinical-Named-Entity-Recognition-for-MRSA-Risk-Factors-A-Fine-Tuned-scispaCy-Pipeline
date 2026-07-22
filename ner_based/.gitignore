@@ -16,11 +16,13 @@ data/interim/airms/*.csv
 # Model checkpoints (large binaries)
 models/checkpoints/
 models/airms_ner_*/
+models/mock_airms_ner/
 !models/.gitkeep
 
 # Annotations (may contain PHI)
 annotations/*.jsonl
 annotations/*.spacy
+annotations/mock/
 !annotations/.gitkeep
 
 # Outputs (timestamped run dirs)
@@ -34,6 +36,7 @@ build/
 .eggs/
 env/
 venv/
+.venv/
 
 # Jupyter
 .ipynb_checkpoints/
