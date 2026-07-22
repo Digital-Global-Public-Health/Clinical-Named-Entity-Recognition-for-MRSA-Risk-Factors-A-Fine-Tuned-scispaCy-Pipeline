@@ -46,6 +46,7 @@ from src.cohort.cohort_builder import CohortConfig, CohortBuilder
 from src.preprocessing.note_preprocessor import NERPreprocessorConfig, NERNotePreprocessor
 from src.ner.annotation_schema import AnnotationSchemaConfig, AnnotationSchema
 from src.ner.model_trainer import NERTrainerConfig, NERModelTrainer
+from src.ner.mock_data import MockNERDataConfig, generate_mock_ner_data
 from src.ner.ner_extractor import NERExtractorConfig, NERExtractor
 from src.features.feature_aggregator import NERAggregatorConfig, NERFeatureAggregator
 from src.evaluation.evaluator import NEREvaluatorConfig, NEREvaluator
@@ -398,6 +399,11 @@ def aggregate_features(
         True, "--include-counts/--no-include-counts",
         help="Include count_{entity} features.",
     ),
+    lookback: int = typer.Option(
+        90,
+        "--lookback",
+        help="Pre-index lookback window in days for future leakage-gate filtering.",
+    ),
     debug: bool = typer.Option(False, "--debug/--no-debug"),
 ) -> None:
     """
@@ -416,6 +422,7 @@ def aggregate_features(
         aggregation_level=level,
         include_negated_features=include_negated,
         include_entity_counts=include_counts,
+        lookback_days=lookback,
         debug=debug,
     )
 
@@ -483,6 +490,7 @@ def run_pipeline(
     skip_preprocess: bool = typer.Option(False, "--skip-preprocess"),
     skip_train: bool = typer.Option(False, "--skip-train", help="Skip training (use existing model)."),
     skip_extract: bool = typer.Option(False, "--skip-extract"),
+    lookback: int = typer.Option(90, "--lookback", help="Pre-index lookback window in days."),
     debug: bool = typer.Option(False, "--debug/--no-debug"),
 ) -> None:
     """
@@ -508,7 +516,7 @@ def run_pipeline(
         logger.info("=== Step 3/5: train ===")
         schema_obj = AnnotationSchema(AnnotationSchemaConfig())
         NERModelTrainer(
-            NERTrainerConfig(model_track=model_track, debug=debug),
+            NERTrainerConfig(track=model_track, debug=debug),
             schema_obj,
             run_dir,
         ).run()
@@ -520,9 +528,79 @@ def run_pipeline(
         ext.run()
 
     logger.info("=== Step 5/5: aggregate-features ===")
-    NERFeatureAggregator(NERAggregatorConfig(debug=debug), run_dir).run()
+    NERFeatureAggregator(NERAggregatorConfig(debug=debug, lookback_days=lookback), run_dir).run()
 
     logger.info("NER pipeline complete.  Run dir: %s", run_dir)
+
+
+# ---------------------------------------------------------------------------
+# Mock Track A plumbing test
+# ---------------------------------------------------------------------------
+
+@app.command(help="Generate synthetic DocBins, train Track A, and evaluate on mock data.")
+@log_timing
+def mock_e2e(
+    annotations_dir: Path = typer.Option(
+        Path("annotations/mock"),
+        help="Directory for synthetic train/val/test DocBins and sidecar CSVs.",
+    ),
+    model_out_dir: Path = typer.Option(
+        Path("models/mock_airms_ner"),
+        help="Directory for the mock-trained spaCy model.",
+    ),
+    base_model: str = typer.Option(
+        "en_core_sci_sm",
+        help="Preferred spaCy/scispaCy base model; falls back to spacy.blank('en') if unavailable.",
+    ),
+    n_epochs: int = typer.Option(
+        5,
+        help="Small epoch count for mock plumbing only; do not treat mock metrics as model quality.",
+    ),
+    batch_size: int = typer.Option(2, help="Mini-batch size for mock training."),
+    dropout: float = typer.Option(0.2, help="Dropout for the mock training loop."),
+    seed: int = typer.Option(GLOBAL_SEED, help=f"Random seed (default: {GLOBAL_SEED})."),
+) -> None:
+    """
+    Run the local no-data Track A plumbing check.
+
+    This command creates synthetic notes only. It does not connect to HANA,
+    SSH, the cohort builder, Minerva, or any real patient data source.
+    """
+    run_dir = _current_run_dir()
+    paths = generate_mock_ner_data(MockNERDataConfig(out_dir=annotations_dir, seed=seed))
+
+    cfg = NERTrainerConfig(
+        track="spacy",
+        base_model=base_model,
+        train_data_path=paths["train_docbin"],
+        val_data_path=paths["val_docbin"],
+        test_data_path=paths["test_docbin"],
+        model_out_dir=model_out_dir,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        dropout=dropout,
+        eval_every_n_epochs=1,
+        min_f1_to_save=0.0,
+        early_stopping_patience=max(n_epochs + 1, 2),
+        device="cpu",
+        seed=seed,
+        debug=False,
+    )
+
+    save_config_snapshot(
+        {
+            **cfg.__dict__,
+            "pipeline_step": "mock_e2e",
+            "mock_annotations_dir": annotations_dir,
+            "mock_split_summary": paths["summary"],
+        },
+        run_dir,
+    )
+
+    schema = AnnotationSchema(AnnotationSchemaConfig())
+    trainer = NERModelTrainer(cfg, schema, run_dir)
+    trainer.run()
+    logger.info("Mock Track A run complete. Run dir: %s", run_dir)
 
 
 # ---------------------------------------------------------------------------

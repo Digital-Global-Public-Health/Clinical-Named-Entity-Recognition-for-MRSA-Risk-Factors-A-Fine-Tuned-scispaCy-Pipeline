@@ -155,7 +155,22 @@ class NERExtractor:
             If cfg.model_path does not exist. Prompts user to run the
             training pipeline first.
         """
-        pass
+        if not self.cfg.model_path.exists():
+            raise FileNotFoundError(
+                f"NER model path does not exist: {self.cfg.model_path}. Run training first."
+            )
+
+        if self.cfg.model_track.lower() == "spacy":
+            import spacy
+
+            self._model = spacy.load(self.cfg.model_path)
+            self.log.info("Loaded spaCy NER model from %s", self.cfg.model_path)
+            return
+
+        if self.cfg.model_track.lower() == "hf":
+            raise NotImplementedError("Track B / HuggingFace extraction is out of thesis scope")
+
+        raise ValueError(f"Unknown model_track: {self.cfg.model_track}")
 
     # ------------------------------------------------------------------
     # Single-note inference
@@ -183,7 +198,24 @@ class NERExtractor:
             - Create an EntitySpan with text, label_, start_char, end_char.
         - confidence is not available from spaCy NER; default to 1.0.
         """
-        pass
+        if self._model is None:
+            raise RuntimeError("Model is not loaded; call load_model() first")
+        doc = self._model(text)
+        entities = []
+        labels = set(self.cfg.entity_labels)
+        for ent in doc.ents:
+            if ent.label_ not in labels:
+                continue
+            entities.append(
+                EntitySpan(
+                    text=ent.text,
+                    label=ent.label_,
+                    start=ent.start_char,
+                    end=ent.end_char,
+                    confidence=1.0,
+                )
+            )
+        return entities
 
     def extract_entities_hf(self, text: str) -> List[EntitySpan]:
         """
@@ -205,7 +237,7 @@ class NERExtractor:
           implement manual BIO decoding for more control.
         - Map subword offsets back to character offsets in the original text.
         """
-        pass
+        raise NotImplementedError("Track B / HuggingFace extraction is out of thesis scope")
 
     def detect_negation(
         self,
@@ -234,7 +266,7 @@ class NERExtractor:
         - Do NOT remove negated entities — keep them with is_negated=True
           so downstream aggregation can choose to include or exclude them.
         """
-        pass
+        raise NotImplementedError("blocked: needs index-event definition from supervisor")
 
     def extract_from_note(
         self,
@@ -260,7 +292,17 @@ class NERExtractor:
           based on cfg.model_track.
         - If cfg.apply_negation: detect_negation().
         """
-        pass
+        if self.cfg.model_track.lower() == "spacy":
+            entities = self.extract_entities_spacy(text)
+        elif self.cfg.model_track.lower() == "hf":
+            entities = self.extract_entities_hf(text)
+        else:
+            raise ValueError(f"Unknown model_track: {self.cfg.model_track}")
+
+        if self.cfg.apply_negation:
+            # ConText/assertion/temporality behavior is intentionally blocked.
+            return self.detect_negation(text, entities)
+        return entities
 
     # ------------------------------------------------------------------
     # Batch processing
@@ -291,7 +333,21 @@ class NERExtractor:
         - Count only entities whose label is in cfg.entity_labels.
         - Negated entities contribute to has_*_negated but NOT to has_* / count_*.
         """
-        pass
+        features: Dict[str, int] = {}
+        for label in self.cfg.entity_labels:
+            features[f"has_{label}"] = 0
+            features[f"count_{label}"] = 0
+            features[f"has_{label}_negated"] = 0
+
+        for ent in entities:
+            if ent.label not in self.cfg.entity_labels:
+                continue
+            if ent.is_negated:
+                features[f"has_{ent.label}_negated"] = 1
+            else:
+                features[f"has_{ent.label}"] = 1
+                features[f"count_{ent.label}"] += 1
+        return features
 
     def extract_batch(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -315,7 +371,22 @@ class NERExtractor:
         - For large DataFrames, batch the texts and run spaCy's
           ``nlp.pipe(texts, batch_size=cfg.batch_size)`` for efficiency.
         """
-        pass
+        rows = []
+        text_col = "NOTE_TEXT_CLEAN" if "NOTE_TEXT_CLEAN" in df.columns else "note_text"
+        if text_col not in df.columns:
+            raise ValueError("Expected NOTE_TEXT_CLEAN or note_text column in preprocessed notes")
+
+        for _, row in df.iterrows():
+            entities = self.extract_from_note(str(row[text_col]), note_id=str(row.get("NOTE_ID", "")))
+            features = self.entities_to_features(entities)
+            out_row = row.to_dict()
+            out_row.update(features)
+            if self.cfg.save_entity_spans:
+                import json
+
+                out_row["ENTITY_SPANS"] = json.dumps([ent.__dict__ for ent in entities])
+            rows.append(out_row)
+        return pd.DataFrame(rows)
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -334,7 +405,12 @@ class NERExtractor:
         FileNotFoundError
             If cfg.preprocessed_notes_dir is missing or empty.
         """
-        pass
+        if not self.cfg.preprocessed_notes_dir.exists():
+            raise FileNotFoundError(f"Missing preprocessed notes dir: {self.cfg.preprocessed_notes_dir}")
+        chunks = sorted(self.cfg.preprocessed_notes_dir.glob("*.parquet"))
+        if not chunks:
+            raise FileNotFoundError(f"No preprocessed Parquet chunks found in {self.cfg.preprocessed_notes_dir}")
+        return chunks
 
     def run(self) -> None:
         """
@@ -359,4 +435,18 @@ class NERExtractor:
         RuntimeError
             If model has not been loaded (call load_model() first).
         """
-        pass
+        if self._model is None:
+            self.load_model()
+
+        self.cfg.out_dir.mkdir(parents=True, exist_ok=True)
+        for chunk_path in self.list_preprocessed_chunks():
+            out_path = self.cfg.out_dir / chunk_path.name
+            if out_path.exists():
+                self.log.info("Skipping existing extraction chunk: %s", out_path)
+                continue
+            df = pd.read_parquet(chunk_path)
+            if self.cfg.debug:
+                df = df.head(self.cfg.debug_n_notes)
+            out_df = self.extract_batch(df)
+            out_df.to_parquet(out_path, index=False)
+            self.log.info("Wrote extraction chunk %s with shape %s", out_path, out_df.shape)

@@ -12,6 +12,11 @@ Produces the same visit-level binary feature matrix format as the rule-based
 pipeline, enabling direct head-to-head comparison.
 
 ---
+Training data format is defined in `../CONTRACT.md`. Treat that contract as the
+source of truth for DocBin structure, entity labels, patient-level splits, and
+sidecar attributes.
+
+---
 
 ## Overview
 

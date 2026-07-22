@@ -240,7 +240,11 @@ class AnnotationSchema:
         list of str
             E.g. ["DISEASE", "MEDICATION", "PROCEDURE"].
         """
-        pass
+        labels = list(self.cfg.entity_types)
+        unknown = [label for label in labels if label not in MRSA_ENTITY_TYPES]
+        if unknown:
+            raise KeyError(f"Unknown entity type(s): {unknown}")
+        return labels
 
     def get_entity_definition(self, entity_type: str) -> EntityType:
         """
@@ -260,7 +264,9 @@ class AnnotationSchema:
         KeyError
             If entity_type is not defined.
         """
-        pass
+        if entity_type not in MRSA_ENTITY_TYPES:
+            raise KeyError(f"Unknown entity type: {entity_type}")
+        return MRSA_ENTITY_TYPES[entity_type]
 
     def validate_annotation(
         self,
@@ -291,7 +297,46 @@ class AnnotationSchema:
         - No overlapping spans.
         - Span text is non-empty.
         """
-        pass
+        warnings: List[str] = []
+        labels = set(self.get_entity_labels())
+        seen = set()
+        spans = []
+
+        for ent in entities:
+            start = ent.get("start")
+            end = ent.get("end")
+            label = ent.get("label")
+            surface = ent.get("text", "")
+
+            if label not in labels:
+                warnings.append(f"Unknown label {label!r} for span {start}:{end}")
+            if not isinstance(start, int) or not isinstance(end, int):
+                warnings.append(f"Span offsets must be integers: {ent}")
+                continue
+            if start < 0 or end > len(text) or start >= end:
+                warnings.append(f"Invalid span offsets {start}:{end}")
+                continue
+            if not text[start:end].strip():
+                warnings.append(f"Empty or whitespace-only span {start}:{end}")
+            if surface and text[start:end] != surface:
+                warnings.append(
+                    f"Span text mismatch at {start}:{end}: expected {surface!r}, got {text[start:end]!r}"
+                )
+
+            key = (start, end, label)
+            if key in seen:
+                warnings.append(f"Duplicate span {start}:{end}:{label}")
+            seen.add(key)
+            spans.append((start, end, label))
+
+        for i, (start_a, end_a, label_a) in enumerate(spans):
+            for start_b, end_b, label_b in spans[i + 1 :]:
+                if start_a < end_b and start_b < end_a:
+                    warnings.append(
+                        f"Overlapping spans {start_a}:{end_a}:{label_a} and {start_b}:{end_b}:{label_b}"
+                    )
+
+        return warnings
 
     def export_guidelines(self) -> Path:
         """
@@ -315,7 +360,34 @@ class AnnotationSchema:
         - Create the parent directory if needed.
         - Log the output path.
         """
-        pass
+        self.cfg.guidelines_out_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "# MRSA NER Annotation Guidelines",
+            "",
+            "Use `CONTRACT.md` as the source of truth for training-data format.",
+            "",
+            "## Entity Labels",
+            "",
+        ]
+        for label in self.get_entity_labels():
+            definition = self.get_entity_definition(label)
+            lines.extend(
+                [
+                    f"### {label}",
+                    "",
+                    definition.description,
+                    "",
+                    "Examples: " + ", ".join(f"`{item}`" for item in definition.examples),
+                    "",
+                    "Exclusions: " + "; ".join(definition.exclusions),
+                    "",
+                    "Tips: " + "; ".join(definition.annotation_tips),
+                    "",
+                ]
+            )
+        self.cfg.guidelines_out_path.write_text("\n".join(lines) + "\n")
+        self.log.info("Annotation guidelines written to %s", self.cfg.guidelines_out_path)
+        return self.cfg.guidelines_out_path
 
     def to_spacy_labels(self) -> List[str]:
         """
@@ -326,7 +398,7 @@ class AnnotationSchema:
         list of str
             Same as get_entity_labels() — spaCy uses plain string labels.
         """
-        pass
+        return self.get_entity_labels()
 
     def export_schema_json(self, out_path: Optional[Path] = None) -> Path:
         """
@@ -342,4 +414,22 @@ class AnnotationSchema:
         Path
             Written file path.
         """
-        pass
+        if out_path is None:
+            out_path = Path("annotations/schema.json")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "entity_types": [
+                {
+                    "name": entity.name,
+                    "description": entity.description,
+                    "examples": entity.examples,
+                    "exclusions": entity.exclusions,
+                    "annotation_tips": entity.annotation_tips,
+                    "mrsa_relevance": entity.mrsa_relevance,
+                }
+                for entity in (self.get_entity_definition(label) for label in self.get_entity_labels())
+            ]
+        }
+        out_path.write_text(json.dumps(payload, indent=2) + "\n")
+        self.log.info("Annotation schema JSON written to %s", out_path)
+        return out_path
