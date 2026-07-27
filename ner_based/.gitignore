@@ -48,3 +48,4 @@ venv/
 # IDE
 .vscode/
 .idea/
+annotations/preannotations/
