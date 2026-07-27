@@ -48,6 +48,15 @@ from src.ner.annotation_schema import AnnotationSchemaConfig, AnnotationSchema
 from src.ner.model_trainer import NERTrainerConfig, NERModelTrainer
 from src.ner.mock_data import MockNERDataConfig, generate_mock_ner_data
 from src.ner.ner_extractor import NERExtractorConfig, NERExtractor
+from src.ner.preannotate import (
+    OllamaClient,
+    OllamaConfig,
+    load_notes,
+    run_preannotation,
+    synthetic_canned_responses,
+    synthetic_fixture_notes,
+)
+from src.ner.preannotation_serializers import write_contract_docbin, write_webanno_tsv3
 from src.features.feature_aggregator import NERAggregatorConfig, NERFeatureAggregator
 from src.evaluation.evaluator import NEREvaluatorConfig, NEREvaluator
 
@@ -232,6 +241,103 @@ def prepare_annotations(
         logger.info("Schema JSON written to: %s", json_path)
 
     logger.info("Configured entity types: %s", schema.get_entity_labels())
+
+
+# ---------------------------------------------------------------------------
+# 3b. preannotate
+# ---------------------------------------------------------------------------
+
+@app.command(help="Ask Ollama for NER pre-annotations, verify spans, and export review artifacts.")
+@log_timing
+def preannotate(
+    input_path: Optional[Path] = typer.Option(
+        None,
+        "--input-path",
+        help="Note input file or directory: JSON, JSONL, TXT, or parquet. Not used with --synthetic-fixtures.",
+    ),
+    out_dir: Path = typer.Option(
+        Path("annotations/preannotations"),
+        help="Output directory for verified JSON, INCEpTION TSV, and CONTRACT.md artifacts.",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Ollama model name. Defaults to OLLAMA_MODEL from .env.",
+    ),
+    synthetic_fixtures: bool = typer.Option(
+        False,
+        "--synthetic-fixtures",
+        help="Run offline on synthetic notes with canned model responses; no Ollama server required.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite existing per-note JSON artifacts. Default is resume-safe skip.",
+    ),
+    write_inception: bool = typer.Option(
+        True,
+        "--write-inception/--no-write-inception",
+        help="Write INCEpTION-importable WebAnno TSV 3.3 files from verified JSON.",
+    ),
+    write_contract: bool = typer.Option(
+        True,
+        "--write-contract/--no-write-contract",
+        help="Write CONTRACT.md DocBin plus empty reserved sidecar from verified JSON.",
+    ),
+) -> None:
+    """
+    Pipeline Step 3b - LLM pre-annotation draft.
+
+    The LLM is only an assistant. Its strings are verified against the source
+    note before offsets are written. Gold annotation is spans and labels only.
+
+    Offline WSL smoke test:
+
+        python -m src.cli preannotate --synthetic-fixtures --out-dir annotations/preannotations/synthetic --overwrite
+
+    Real Minerva run:
+
+        python -m src.cli preannotate --input-path data/interim/airms/notes_preprocessed --out-dir annotations/preannotations/minerva --model "$OLLAMA_MODEL"
+    """
+    if synthetic_fixtures:
+        notes = synthetic_fixture_notes()
+        canned = synthetic_canned_responses()
+        client = None
+    else:
+        if input_path is None:
+            raise typer.BadParameter("--input-path is required unless --synthetic-fixtures is used")
+        notes = load_notes(input_path)
+        canned = None
+        client = OllamaClient(OllamaConfig.from_env(model=model))
+
+    save_config_snapshot(
+        {
+            "pipeline_step": "preannotate",
+            "input_path": input_path,
+            "out_dir": out_dir,
+            "model": model,
+            "synthetic_fixtures": synthetic_fixtures,
+            "overwrite": overwrite,
+            "write_inception": write_inception,
+            "write_contract": write_contract,
+        },
+        run_dir=_current_run_dir(),
+    )
+
+    totals = run_preannotation(
+        notes=notes,
+        out_dir=out_dir,
+        client=client,
+        canned_responses=canned,
+        overwrite=overwrite,
+    )
+    print(totals.format_block("Run total"))
+
+    if write_inception:
+        inception_summary = write_webanno_tsv3(out_dir / "verified", out_dir / "inception_webanno_tsv3")
+        print(inception_summary.format_block("WebAnno TSV stats"))
+    if write_contract:
+        write_contract_docbin(out_dir / "verified", out_dir / "contract_docbin")
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ Only these labels are in scope for Track A:
 - `MEDICATION`
 - `PROCEDURE`
 
-Gold entity spans live in `doc.ents`. Do not add assertion, temporality, experiencer, severity, negation, or other attributes to `doc.ents`.
+Gold annotation currently consists of spans and labels only. Gold entity spans live in `doc.ents`. Do not add assertion, temporality, experiencer, severity, negation, or other attributes to `doc.ents`.
 
 ## Span Construction
 
@@ -42,13 +42,19 @@ The required failure log fields are:
 
 ## Attribute Sidecar
 
-Entity attributes are stored outside the `.spacy` files in a CSV sidecar keyed by exact span coordinates:
+The attribute sidecar is reserved for a later phase. Assertion, temporality,
+and experiencer are not part of gold annotation for now; medspaCy ConText will
+handle these attributes later at inference time.
+
+During the transition, a compatibility CSV sidecar may be written because some
+existing training plumbing expects a sidecar file keyed by exact span
+coordinates:
 
 ```text
 (note_id, start_char, end_char) -> assertion, temporality, experiencer
 ```
 
-Required sidecar columns:
+Compatibility sidecar columns:
 
 - `note_id`
 - `patient_id`
@@ -60,16 +66,15 @@ Required sidecar columns:
 - `temporality`
 - `experiencer`
 
-Defaults when a field is absent upstream:
+Reserved attribute fields must be left empty unless/until the later attribute
+phase is explicitly implemented. Do not map LLM context guesses into these
+columns.
 
-- `assertion=PRESENT`
-- `temporality=CURRENT`
-- `experiencer=PATIENT`
+If the attribute layer is reintroduced, the vocabulary must match the
+annotation guideline:
 
-Current allowed values:
-
-- `assertion`: `PRESENT`, `NEGATED`, `UNCERTAIN`
-- `temporality`: `CURRENT`, `HISTORICAL`, `PLANNED`
+- `assertion`: `PRESENT`, `NEGATED`, `POSSIBLE`, `ALLERGY`
+- `temporality`: `CURRENT`, `HISTORICAL`, `HYPOTHETICAL`
 - `experiencer`: `PATIENT`, `OTHER`
 
 ## Expected Files
@@ -80,7 +85,7 @@ Training/evaluation uses spaCy DocBins:
 - `annotations/val.spacy` or `annotations/dev.spacy`
 - `annotations/test.spacy`
 
-Matching sidecars should be split the same way:
+Compatibility sidecars, when written, should be split the same way:
 
 - `annotations/train_attributes.csv`
 - `annotations/val_attributes.csv` or `annotations/dev_attributes.csv`
@@ -90,4 +95,7 @@ Mock data may live under `annotations/mock/` with the same filenames.
 
 ## Explicit Non-Goals
 
-The sidecar is only read as metadata at this stage. ConText, assertion resolution, temporality resolution, experiencer resolution, and index-date leakage filtering are blocked until the supervisor defines the index-event semantics.
+The sidecar is reserved and should not be used as gold metadata at this stage.
+ConText, assertion resolution, temporality resolution, experiencer resolution,
+and index-date leakage filtering are blocked until the supervisor defines the
+index-event semantics.

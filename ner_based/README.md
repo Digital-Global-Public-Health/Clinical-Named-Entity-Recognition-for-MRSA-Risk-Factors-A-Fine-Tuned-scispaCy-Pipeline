@@ -183,6 +183,39 @@ mrsa_risk_predictions/
 
 ---
 
+## LLM Pre-Annotation Drafts
+
+The pre-annotation stage proposes spans with a local Ollama model, verifies
+every proposed string against the source note text, and writes real character
+offsets. These are first-draft annotations for human review in INCEpTION, not
+gold labels.
+
+Offline WSL smoke test with synthetic notes and canned responses:
+
+```bash
+python -m src.cli preannotate \
+  --synthetic-fixtures \
+  --out-dir annotations/preannotations/synthetic \
+  --overwrite
+```
+
+Real Minerva run, after `.env` contains `OLLAMA_HOST`,
+`OLLAMA_AUTH_USER`, `OLLAMA_AUTH_TOKEN`, and either `OLLAMA_MODEL` or
+`--model` is provided:
+
+```bash
+python -m src.cli preannotate \
+  --input-path data/interim/airms/notes_preprocessed \
+  --out-dir annotations/preannotations/minerva \
+  --model "$OLLAMA_MODEL"
+```
+
+Primary artifacts are written under `verified/` as one JSON file per note.
+Derived review/training exports are written under `inception_webanno_tsv3/`
+and `contract_docbin/`.
+
+---
+
 ## Project Structure
 
 ```
