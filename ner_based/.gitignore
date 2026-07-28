@@ -23,11 +23,17 @@ models/mock_airms_ner/
 annotations/*.jsonl
 annotations/*.spacy
 annotations/mock/
+# PHI-bearing preannotation output
+annotations/preannotations/
 !annotations/.gitkeep
 
 # Outputs (timestamped run dirs)
 outputs/*/
 !outputs/.gitkeep
+
+# PHI-bearing single-patient note extraction output
+data/interim/airms/extracted/
+outputs/extracted/
 
 # Conda / Python environments
 *.egg-info/
@@ -48,4 +54,3 @@ venv/
 # IDE
 .vscode/
 .idea/
-annotations/preannotations/

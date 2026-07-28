@@ -15,6 +15,9 @@ Usage (from project root, with conda env activated):
     # Step 3 — annotate a sample for NER training (exports guidelines)
     python -m src.cli prepare-annotations [OPTIONS]
 
+    # Extract one patient's notes for pre-annotation
+    python -m src.cli extract-patient [OPTIONS]
+
     # Step 4 — train / fine-tune the NER model
     python -m src.cli train [OPTIONS]
 
@@ -33,6 +36,8 @@ Usage (from project root, with conda env activated):
 
 from __future__ import annotations
 
+import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -48,6 +53,15 @@ from src.ner.annotation_schema import AnnotationSchemaConfig, AnnotationSchema
 from src.ner.model_trainer import NERTrainerConfig, NERModelTrainer
 from src.ner.mock_data import MockNERDataConfig, generate_mock_ner_data
 from src.ner.ner_extractor import NERExtractorConfig, NERExtractor
+from src.ner.extract_patient import (
+    DEFAULT_NOTE_TITLES,
+    DEFAULT_OUTPUT_PATH,
+    LOG as extract_patient_logger,
+    PatientExtractionError,
+    PatientNoteExtractionConfig,
+    extract_patient_notes,
+    parse_note_titles,
+)
 from src.ner.preannotate import (
     OllamaClient,
     OllamaConfig,
@@ -82,6 +96,26 @@ def _configure(
 ) -> None:
     """Global CLI options, logging setup, and seed initialization."""
     run_name = ctx.invoked_subcommand or "cli"
+    if run_name == "extract-patient":
+        numeric = getattr(logging, log_level.upper(), logging.INFO)
+        previous_level = extract_patient_logger.level
+        previous_propagate = extract_patient_logger.propagate
+        handler = logging.StreamHandler()
+        handler.setLevel(numeric)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        extract_patient_logger.setLevel(numeric)
+        extract_patient_logger.propagate = False
+        extract_patient_logger.addHandler(handler)
+
+        def _close_extract_patient_logging() -> None:
+            extract_patient_logger.removeHandler(handler)
+            handler.close()
+            extract_patient_logger.setLevel(previous_level)
+            extract_patient_logger.propagate = previous_propagate
+
+        ctx.call_on_close(_close_extract_patient_logging)
+        return
+
     run_dir = configure_logging(log_level, run_name=run_name)
     set_seed(seed)
     logger.info("Log level : %s", log_level.upper())
@@ -244,7 +278,59 @@ def prepare_annotations(
 
 
 # ---------------------------------------------------------------------------
-# 3b. preannotate
+# 3b. extract-patient
+# ---------------------------------------------------------------------------
+
+@app.command(
+    "extract-patient",
+    help="Extract one cohort patient's full notes for NER pre-annotation.",
+)
+def extract_patient(
+    notes_parquet: Path = typer.Option(
+        ...,
+        "--notes-parquet",
+        help="Cohort notes parquet containing PERSON_ID and clinical note columns.",
+    ),
+    cohort_csv: Path = typer.Option(
+        ...,
+        "--cohort-csv",
+        help="Cohort CSV containing PERSON_ID and LABEL.",
+    ),
+    person_id: str = typer.Option(
+        ...,
+        "--person-id",
+        help="Single PERSON_ID to extract; interpreted using the parquet PERSON_ID type.",
+    ),
+    note_titles: str = typer.Option(
+        ",".join(DEFAULT_NOTE_TITLES),
+        "--note-titles",
+        help="Comma-separated NOTE_TITLE values to retain.",
+    ),
+    output: Path = typer.Option(
+        DEFAULT_OUTPUT_PATH,
+        "--output",
+        help="Output parquet path. Existing files are replaced; directories are never removed.",
+    ),
+) -> None:
+    """Extract one patient's full notes with a read-time parquet filter."""
+    try:
+        titles = parse_note_titles(note_titles)
+        extract_patient_notes(
+            PatientNoteExtractionConfig(
+                notes_parquet=notes_parquet,
+                cohort_csv=cohort_csv,
+                person_ids=(person_id,),
+                note_titles=titles,
+                output=output,
+                require_cohort_membership=True,
+            )
+        )
+    except PatientExtractionError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# 3c. preannotate
 # ---------------------------------------------------------------------------
 
 @app.command(help="Ask Ollama for NER pre-annotations, verify spans, and export review artifacts.")
@@ -720,5 +806,6 @@ def _current_run_dir() -> Path:
 
 
 if __name__ == "__main__":
-    configure_logging("INFO", run_name="cli")
+    if "extract-patient" not in sys.argv[1:]:
+        configure_logging("INFO", run_name="cli")
     app()

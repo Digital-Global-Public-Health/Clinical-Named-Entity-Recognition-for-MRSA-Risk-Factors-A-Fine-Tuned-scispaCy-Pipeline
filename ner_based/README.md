@@ -199,6 +199,28 @@ python -m src.cli preannotate \
   --overwrite
 ```
 
+Single-patient Minerva run:
+
+**PHI reminder:** `/sc/arion/work/rademt02/airms_notes/extracted/` holds
+extracted clinical note text; do not share it, and purge it when done.
+
+```bash
+export PERSON_ID="<PERSON_ID>"
+EXTRACTED_NOTES="/sc/arion/work/rademt02/airms_notes/extracted/extracted_patient_notes.parquet"
+PREANNOTATION_DIR="/sc/arion/work/rademt02/airms_notes/preannotations/person_${PERSON_ID}"
+
+python -m src.cli extract-patient \
+  --notes-parquet /sc/arion/projects/MRSA-HPI-MS/airms-app-host-and-hospital-adaptation-of-mrsa/mrsa_nlp/rule_based/data/interim/airms/notes/all/cohort_notes.parquet \
+  --cohort-csv /sc/arion/projects/MRSA-HPI-MS/airms-app-host-and-hospital-adaptation-of-mrsa/mrsa_nlp/rule_based/data/interim/airms/cohort_subset.csv \
+  --person-id "$PERSON_ID" \
+  --output "$EXTRACTED_NOTES"
+
+python -m src.cli preannotate \
+  --input-path "$EXTRACTED_NOTES" \
+  --out-dir "$PREANNOTATION_DIR" \
+  --model "$OLLAMA_MODEL"
+```
+
 Real Minerva run, after `.env` contains `OLLAMA_HOST`,
 `OLLAMA_AUTH_USER`, `OLLAMA_AUTH_TOKEN`, and either `OLLAMA_MODEL` or
 `--model` is provided:
@@ -442,6 +464,8 @@ Commands:
   build-cohort         Load MRSA cohort and mine notes from CDMPHI.NOTES
   preprocess           Clean and normalise raw note chunks for NER
   prepare-annotations  Export annotation schema and guidelines
+  extract-patient      Extract one patient's notes for NER pre-annotation
+  preannotate          Ask Ollama for NER pre-annotations and verify spans
   train                Train or fine-tune a NER model
   extract              Run NER inference on preprocessed note chunks
   aggregate-features   Aggregate NER extractions to visit-level matrix
