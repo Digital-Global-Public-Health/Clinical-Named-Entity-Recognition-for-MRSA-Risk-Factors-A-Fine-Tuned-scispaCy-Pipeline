@@ -183,7 +183,8 @@ class OllamaClient:
                 {"role": "system", "content": PREANNOTATION_SYSTEM_PROMPT},
                 {"role": "user", "content": note_text},
             ],
-            "options": {"temperature": 0.0},
+            "format": "json",
+            "options": {"temperature": 0.0, "num_ctx": 8192},
             "stream": False,
         }
         data = json.dumps(payload).encode("utf-8")
