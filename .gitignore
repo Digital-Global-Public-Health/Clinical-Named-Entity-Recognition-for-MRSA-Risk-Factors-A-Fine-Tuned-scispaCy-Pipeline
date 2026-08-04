@@ -1,0 +1,17 @@
+data/*.parquet
+
+# PHI — never commit. Contains real AIR·MS note text.
+annotations/preannotations*/
+outputs/
+*.tsv
+*.parquet
+*.spacy
+*.csv
+
+# LSF job logs
+ollama_*.err
+ollama_*.out
+
+# PHI (path-independent)
+**/annotations/preannotations*/
+**/outputs/
