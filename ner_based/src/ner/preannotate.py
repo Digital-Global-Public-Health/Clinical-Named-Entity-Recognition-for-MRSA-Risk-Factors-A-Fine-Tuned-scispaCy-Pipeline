@@ -47,6 +47,19 @@ Rules:
 - ALLERGY: "Penicillin allergy" -> tag "Penicillin" as MEDICATION.
 - Do NOT tag anatomy or body parts (e.g. "L leg", "left arm"). Not entities.
 
+Span boundaries (tag the shortest span that carries the clinical meaning):
+- MEDICATION: drug name only. Exclude parenthetical brand names, dose, strength,
+  form, route, and frequency.
+  "omeprazole (PRILOSEC) 20 mg capsule Take 20 mg by mouth daily" -> "omeprazole"
+  "fluticasone-salmeterol (ADVAIR) 250-50 mcg" -> "fluticasone-salmeterol"
+- DISEASE/PROCEDURE: tag the full clinical term, but exclude trailing anatomical
+  qualifiers that are separate body-part mentions.
+  "Macular degeneration of right eye" -> "Macular degeneration"
+  "Lumpectomy Right" -> "Lumpectomy"
+- Where an abbreviation and its expansion both appear, tag each separately.
+  Do not merge them into one span.
+- Exclude leading bullets, numbering, and section labels from the span.
+
 Few-shot example:
 Note: No pneumonia today. Mother had lymphoma. Penicillin allergy listed. If fever develops, start vancomycin.
 JSON:
