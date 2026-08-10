@@ -26,6 +26,7 @@ class SerializerSummary:
     skipped_invalid_label: int = 0
     skipped_overlapping: int = 0
     alignment_failures: int = 0
+    expanded_to_token_boundaries: int = 0
     snapped_token_boundaries: int = 0
     notes: int = 0
 
@@ -34,6 +35,7 @@ class SerializerSummary:
             "written": self.written,
             "skipped_invalid_label": self.skipped_invalid_label,
             "skipped_overlapping": self.skipped_overlapping,
+            "expanded_to_token_boundaries": self.expanded_to_token_boundaries,
             "alignment_failures": self.alignment_failures,
             "snapped_token_boundaries": self.snapped_token_boundaries,
             "notes": self.notes,
@@ -138,6 +140,25 @@ def write_contract_docbin(verified_dir: Path, out_dir: Path, split_name: str = "
                 label=str(label),
                 alignment_mode="strict",
             )
+            if span is None:
+                # Strict alignment rejects spans abutting punctuation
+                # ("CAD-", "COVID-19", "AMS/"). Expanding to token
+                # boundaries recovers these, but only when the added
+                # characters are non-alphanumeric -- otherwise expansion
+                # would widen the span to a different word.
+                candidate = doc.char_span(
+                    start_char,
+                    end_char,
+                    label=str(label),
+                    alignment_mode="expand",
+                )
+                if candidate is not None:
+                    added = candidate.text.replace(
+                        doc.text[start_char:end_char], "", 1
+                    )
+                    if not any(ch.isalnum() for ch in added):
+                        span = candidate
+                        summary.expanded_to_token_boundaries += 1
             if span is None:
                 summary.alignment_failures += 1
                 alignment_failures.append(

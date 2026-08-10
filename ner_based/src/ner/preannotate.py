@@ -288,12 +288,20 @@ def verify_model_response(note: Note, response: Mapping[str, Any]) -> Verificati
             occurrences = _find_normalized_occurrences(note.text, proposed_text)
 
         if not occurrences:
+            # Distinguish hallucinations from substring collisions: a needle
+            # present only mid-token (e.g. "MI" inside "MIRALAX") is a
+            # verification artifact, not an invented entity.
+            reason = (
+                "no_boundary_match"
+                if proposed_text and proposed_text in note.text
+                else "not_in_text"
+            )
             stats.dropped_not_in_text += 1
             rejected.append(
                 {
                     "entity_index": entity_index,
                     "proposed": dict(entity),
-                    "reason": "not_in_text",
+                    "reason": reason,
                 }
             )
             continue
@@ -303,6 +311,13 @@ def verify_model_response(note: Note, response: Mapping[str, Any]) -> Verificati
             stats.ambiguous += len(occurrences) - 1
 
         for occurrence_index, (start_char, end_char) in enumerate(occurrences):
+            # The whitespace-normalized fallback can map an offset one
+            # character wide, yielding spans like " Jakafi". Trim the edges
+            # so span text never carries leading/trailing whitespace.
+            while start_char < end_char and note.text[start_char].isspace():
+                start_char += 1
+            while end_char > start_char and note.text[end_char - 1].isspace():
+                end_char -= 1
             if start_char == end_char or not note.text[start_char:end_char].strip():
                 stats.dropped_empty += 1
                 rejected.append(
