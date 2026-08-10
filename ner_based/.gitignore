@@ -54,3 +54,14 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# PHI — annotation outputs (batch* and any future run dirs)
+annotations/batch*/
+**/annotations/batch*/
+annotations/p_w*/
+*.log
+*.bak
+
+# PHI — exported cohort note text
+test/
+batch01_patients.txt
