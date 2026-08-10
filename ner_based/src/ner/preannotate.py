@@ -356,13 +356,21 @@ def run_preannotation(
     verified_dir = out_dir / "verified"
     verified_dir.mkdir(parents=True, exist_ok=True)
 
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+
+    workers = int(os.environ.get("PREANNOTATE_WORKERS", "1"))
     totals = VerificationStats()
-    for note in notes:
+    lock = Lock()
+
+    def _one(note):
         out_path = verified_dir / f"{_safe_filename(note.note_id)}.json"
         if out_path.exists() and not overwrite:
-            logger.info("Skipping existing pre-annotation artifact: %s", out_path)
-            totals.skipped_existing += 1
-            continue
+            with lock:
+                logger.info("Skipping existing pre-annotation artifact: %s", out_path)
+                totals.skipped_existing += 1
+            return
 
         if canned_responses is not None:
             response = canned_responses.get(note.note_id, {"entities": []})
@@ -372,8 +380,18 @@ def run_preannotation(
 
         result = verify_model_response(note, response)
         out_path.write_text(json.dumps(result.to_json_dict(), indent=2) + "\n")
-        totals.add(result.stats)
-        logger.info("%s\n%s", note.note_id, result.stats.format_block("Note stats"))
+        with lock:
+            totals.add(result.stats)
+            logger.info("%s\n%s", note.note_id, result.stats.format_block("Note stats"))
+
+    if workers > 1:
+        logger.info("Running with %d parallel workers", workers)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for fut in [pool.submit(_one, n) for n in notes]:
+                fut.result()
+    else:
+        for note in notes:
+            _one(note)
 
     (out_dir / "run_summary.json").write_text(json.dumps(totals.as_dict(), indent=2) + "\n")
     logger.info("\n%s", totals.format_block("Run total"))
@@ -526,14 +544,20 @@ def _json_object_substring(raw: str) -> str:
 
 
 def _find_exact_occurrences(text: str, needle: str) -> List[Tuple[int, int]]:
-    occurrences: List[Tuple[int, int]] = []
-    start = 0
-    while True:
-        idx = text.find(needle, start)
-        if idx == -1:
-            return occurrences
-        occurrences.append((idx, idx + len(needle)))
-        start = idx + 1
+    """Locate literal occurrences of ``needle``, rejecting mid-token matches.
+
+    A bare substring scan matches "MI" inside "MIRALAX" and "EXAMINATION".
+    Word-boundary lookarounds are applied only at ends where the needle
+    itself is word-like, so punctuation-edged spans ("-SBP", "CMV+") still match.
+    """
+    if not needle:
+        return []
+    pattern = re.escape(needle)
+    if needle[0].isalnum() or needle[0] == "_":
+        pattern = r"(?<!\w)" + pattern
+    if needle[-1].isalnum() or needle[-1] == "_":
+        pattern = pattern + r"(?!\w)"
+    return [(m.start(), m.end()) for m in re.finditer(pattern, text)]
 
 
 def _find_normalized_occurrences(text: str, needle: str) -> List[Tuple[int, int]]:
