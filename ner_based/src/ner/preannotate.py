@@ -394,6 +394,14 @@ def run_preannotation(
             response = client.propose_entities(note.text)
 
         result = verify_model_response(note, response)
+        # Do not persist an artifact for a failed request: an empty file would
+        # be treated as "done" by the resume path and the note would never be
+        # annotated. Leaving it absent makes the next run retry it.
+        if result.stats.request_failed:
+            with lock:
+                totals.add(result.stats)
+                logger.warning("Request failed, no artifact written: %s", note.note_id)
+            return
         out_path.write_text(json.dumps(result.to_json_dict(), indent=2) + "\n")
         with lock:
             totals.add(result.stats)
