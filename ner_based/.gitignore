@@ -14,9 +14,7 @@ data/interim/airms/*.csv
 !data/interim/airms/notes/.gitkeep
 
 # Model checkpoints (large binaries)
-models/checkpoints/
-models/airms_ner_*/
-models/mock_airms_ner/
+models/*
 !models/.gitkeep
 
 # Annotations (may contain PHI)
