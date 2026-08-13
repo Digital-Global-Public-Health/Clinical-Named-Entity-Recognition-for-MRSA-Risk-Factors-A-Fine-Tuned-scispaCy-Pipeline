@@ -65,3 +65,13 @@ annotations/p_w*/
 # PHI — exported cohort note text
 test/
 batch01_patients.txt
+annotations/
+outputs/
+splits/*.spacy
+splits/manifest.csv
+splits/gold_candidates.csv
+dup_clusters.csv
+batch*_patients.txt
+*_run.log
+*.parquet
+*.tsv
