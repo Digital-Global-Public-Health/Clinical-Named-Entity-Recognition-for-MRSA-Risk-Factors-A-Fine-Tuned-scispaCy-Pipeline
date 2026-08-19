@@ -178,7 +178,7 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
     # and appends only ConText (with its packaged default rules).
     nlp = medspacy.load(
         str(model_path),
-        enable=["medspacy_context"],
+        medspacy_enable=["medspacy_context"],
         load_rules=True,
     )
     if "ner" not in nlp.pipe_names:
