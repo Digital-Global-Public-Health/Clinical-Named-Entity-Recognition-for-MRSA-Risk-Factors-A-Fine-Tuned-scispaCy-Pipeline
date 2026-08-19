@@ -25,6 +25,7 @@ ASSERTION_FLAGS = (
     "is_negated",
     "is_historical",
     "is_hypothetical",
+    "is_uncertain",
     "is_family",
 )
 CSV_FIELDS = (

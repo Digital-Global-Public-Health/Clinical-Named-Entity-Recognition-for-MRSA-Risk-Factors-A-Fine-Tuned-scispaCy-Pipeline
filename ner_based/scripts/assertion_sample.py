@@ -18,6 +18,7 @@ ASSERTION_FLAGS = (
     "is_negated",
     "is_historical",
     "is_hypothetical",
+    "is_uncertain",
     "is_family",
 )
 TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y"})
