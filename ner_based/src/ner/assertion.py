@@ -1,0 +1,206 @@
+"""Clinical assertion detection layered on top of the AIR.MS NER model.
+
+Gold NER annotations remain span-and-label only. This module applies medspaCy
+ConText after NER at inference/review time and exposes the resulting assertion,
+temporality, and experiencer flags on each predicted entity.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, Mapping, Tuple, Union
+
+import medspacy
+from medspacy.context import ConTextRule
+from spacy.language import Language
+
+
+ALLOWED_LABELS = frozenset({"DISEASE", "MEDICATION", "PROCEDURE"})
+
+# AIR.MS-specific additions to medspaCy's default ConText rules. Each comment
+# records why the cue is included and the direction in which it modifies an
+# entity. Matching is case-insensitive under ConText's default LOWER matcher.
+AIRMS_CONTEXT_RULES = [
+    # "no": the most common compact pre-negation in problem and review lists.
+    ConTextRule("no", "NEGATED_EXISTENCE", direction="FORWARD"),
+    # "denies": patient denial negates the following symptom or condition.
+    ConTextRule("denies", "NEGATED_EXISTENCE", direction="FORWARD"),
+    # "without": absence phrased as a preposition modifies the following entity.
+    ConTextRule("without", "NEGATED_EXISTENCE", direction="FORWARD"),
+    # "negative for": test/review language negates the following finding.
+    ConTextRule("negative for", "NEGATED_EXISTENCE", direction="FORWARD"),
+    # "not": broad clinical shorthand used immediately before an absent finding.
+    ConTextRule("not", "NEGATED_EXISTENCE", direction="FORWARD"),
+    # "no evidence of": multi-token absence cue used in assessments and imaging.
+    ConTextRule("no evidence of", "NEGATED_EXISTENCE", direction="FORWARD"),
+    # "free of": states that the following condition is absent.
+    ConTextRule("free of", "NEGATED_EXISTENCE", direction="FORWARD"),
+    # "rules out": completed diagnostic language is treated as negation.
+    ConTextRule("rules out", "NEGATED_EXISTENCE", direction="FORWARD"),
+    # "r/o": mapped to negation per the AIR.MS specification; in some notes it
+    # instead means an unresolved differential, so this cue requires review.
+    ConTextRule("r/o", "NEGATED_EXISTENCE", direction="FORWARD"),
+
+    # "h/o": standard abbreviation introducing past medical history.
+    ConTextRule("h/o", "HISTORICAL", direction="FORWARD"),
+    # "hx of": compact history phrase modifying the following entity.
+    ConTextRule("hx of", "HISTORICAL", direction="FORWARD"),
+    # "PMHx": past-medical-history section shorthand with forward scope.
+    ConTextRule("PMHx", "HISTORICAL", direction="FORWARD"),
+    # "PMH": past-medical-history section shorthand with forward scope.
+    ConTextRule("PMH", "HISTORICAL", direction="FORWARD"),
+    # "s/p": status-post abbreviation indicating a prior procedure/event.
+    ConTextRule("s/p", "HISTORICAL", direction="FORWARD"),
+    # "status post": expanded status-post phrase for a prior procedure/event.
+    ConTextRule("status post", "HISTORICAL", direction="FORWARD"),
+    # "history of": explicit phrase introducing a historical entity.
+    ConTextRule("history of", "HISTORICAL", direction="FORWARD"),
+    # "previous": adjective marking the following entity as historical.
+    ConTextRule("previous", "HISTORICAL", direction="FORWARD"),
+    # "prior": adjective marking the following entity as historical.
+    ConTextRule("prior", "HISTORICAL", direction="FORWARD"),
+
+    # "if": conditional plans make subsequent mentions hypothetical.
+    ConTextRule("if", "HYPOTHETICAL", direction="FORWARD"),
+    # "should": conditional recommendation/planning cue with forward scope.
+    ConTextRule("should", "HYPOTHETICAL", direction="FORWARD"),
+    # "concern for": introduces a suspected rather than established condition.
+    ConTextRule("concern for", "HYPOTHETICAL", direction="FORWARD"),
+    # "c/f": compact form of "concern for".
+    ConTextRule("c/f", "HYPOTHETICAL", direction="FORWARD"),
+    # "possible": explicitly marks the following entity as uncertain.
+    ConTextRule("possible", "HYPOTHETICAL", direction="FORWARD"),
+    # "may represent": interpretation language marking the next entity uncertain.
+    ConTextRule("may represent", "HYPOTHETICAL", direction="FORWARD"),
+    # "versus": both sides of a differential are hypothetical alternatives.
+    ConTextRule("versus", "HYPOTHETICAL", direction="BIDIRECTIONAL"),
+    # "vs": abbreviated differential; like "versus", it modifies both sides.
+    ConTextRule("vs", "HYPOTHETICAL", direction="BIDIRECTIONAL"),
+    # "rule out": an unresolved diagnostic instruction, not a confirmed absence.
+    ConTextRule("rule out", "HYPOTHETICAL", direction="FORWARD"),
+    # "consider": plan/assessment language makes the following entity provisional.
+    ConTextRule("consider", "HYPOTHETICAL", direction="FORWARD"),
+
+    # "mother": assigns the following clinical mention to another experiencer.
+    ConTextRule("mother", "FAMILY", direction="FORWARD"),
+    # "father": assigns the following clinical mention to another experiencer.
+    ConTextRule("father", "FAMILY", direction="FORWARD"),
+    # "sister": assigns the following clinical mention to another experiencer.
+    ConTextRule("sister", "FAMILY", direction="FORWARD"),
+    # "brother": assigns the following clinical mention to another experiencer.
+    ConTextRule("brother", "FAMILY", direction="FORWARD"),
+    # "family history": explicit family-experiencer phrase.
+    ConTextRule("family history", "FAMILY", direction="FORWARD"),
+    # "FHx": compact family-history section shorthand.
+    ConTextRule("FHx", "FAMILY", direction="FORWARD"),
+
+    # Coordinating contrast ends preceding ConText scope.
+    ConTextRule("but", "TERMINATE", direction="TERMINATE"),
+    # Sentence-level contrast likewise starts a new assertion scope.
+    ConTextRule("however", "TERMINATE", direction="TERMINATE"),
+    # Semicolons commonly separate independent findings in clinical prose.
+    ConTextRule(";", "TERMINATE", direction="TERMINATE"),
+    # AIR.MS section headings are not standardized. Conservatively treat every
+    # token containing a line break as a boundary so scope cannot leak into the
+    # next section; this can truncate scope across manually wrapped lines.
+    ConTextRule(
+        "\n",
+        "TERMINATE",
+        direction="TERMINATE",
+        pattern=[{"IS_SPACE": True, "TEXT": {"REGEX": r"[\r\n]+"}}],
+    ),
+]
+
+
+TextInput = Union[str, Tuple[str, str], Mapping[str, Any]]
+
+
+def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
+    """Load a fine-tuned AIR.MS NER model and append medspaCy ConText.
+
+    medspaCy's standard ConText rules are loaded first, after which the
+    AIR.MS-specific rules above are added. The trained models contain no parser
+    or sentence segmenter, so a spaCy sentencizer is inserted before NER.
+    """
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"NER model path does not exist: {model_path}")
+
+    # medspaCy delegates model loading to spaCy, keeps the fine-tuned pipeline,
+    # and appends only ConText (with its packaged default rules).
+    nlp = medspacy.load(
+        str(model_path),
+        enable=["medspacy_context"],
+        load_rules=True,
+    )
+    if "ner" not in nlp.pipe_names:
+        raise ValueError(f"spaCy model has no NER component: {model_path}")
+
+    sentence_components = {"parser", "senter", "sentencizer", "medspacy_pyrush"}
+    if not sentence_components.intersection(nlp.pipe_names):
+        nlp.add_pipe("sentencizer", before="ner")
+
+    context = nlp.get_pipe("medspacy_context")
+    context.add(AIRMS_CONTEXT_RULES)
+
+    if nlp.pipe_names.index("medspacy_context") <= nlp.pipe_names.index("ner"):
+        raise RuntimeError("medspacy_context must run after the NER component")
+    return nlp
+
+
+def annotate_assertions(
+    nlp: Language,
+    texts: Iterable[TextInput],
+    *,
+    batch_size: int = 32,
+) -> Iterator[Dict[str, Any]]:
+    """Yield one assertion record per predicted clinical entity.
+
+    ``texts`` may contain plain strings, ``(note_id, text)`` pairs, or mappings
+    with ``note_id`` and ``text`` keys. Plain strings receive their zero-based
+    input position as ``note_id``. Only the three annotation-schema labels are
+    emitted.
+    """
+    if "ner" not in nlp.pipe_names or "medspacy_context" not in nlp.pipe_names:
+        raise ValueError("nlp must contain NER followed by medspacy_context")
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+
+    stream = _normalise_text_inputs(texts)
+    for doc, note_id in nlp.pipe(stream, as_tuples=True, batch_size=batch_size):
+        for ent in doc.ents:
+            if ent.label_ not in ALLOWED_LABELS:
+                continue
+            yield {
+                "note_id": note_id,
+                "text": ent.text,
+                "label": ent.label_,
+                "start": ent.start_char,
+                "end": ent.end_char,
+                "is_negated": bool(getattr(ent._, "is_negated", False)),
+                "is_historical": bool(getattr(ent._, "is_historical", False)),
+                "is_hypothetical": bool(getattr(ent._, "is_hypothetical", False)),
+                "is_family": bool(getattr(ent._, "is_family", False)),
+            }
+
+
+def _normalise_text_inputs(texts: Iterable[TextInput]) -> Iterator[Tuple[str, str]]:
+    """Convert supported caller inputs to spaCy's ``(text, context)`` form."""
+    for index, item in enumerate(texts):
+        if isinstance(item, str):
+            yield item, str(index)
+            continue
+
+        if isinstance(item, Mapping):
+            if "note_id" not in item or "text" not in item:
+                raise ValueError("text mappings must contain note_id and text")
+            yield str(item["text"]), str(item["note_id"])
+            continue
+
+        try:
+            note_id, text = item
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                "texts must contain strings, (note_id, text) pairs, or mappings"
+            ) from exc
+        yield str(text), str(note_id)

@@ -73,3 +73,4 @@ batch*_patients.txt
 *_run.log
 *.parquet
 *.tsv
+notebooks/
