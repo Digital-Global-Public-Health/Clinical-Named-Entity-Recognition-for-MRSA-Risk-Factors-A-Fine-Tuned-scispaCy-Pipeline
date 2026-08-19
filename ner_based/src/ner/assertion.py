@@ -112,14 +112,22 @@ AIRMS_CONTEXT_RULES = [
     ConTextRule("however", "TERMINATE", direction="TERMINATE"),
     # Semicolons commonly separate independent findings in clinical prose.
     ConTextRule(";", "TERMINATE", direction="TERMINATE"),
-    # AIR.MS section headings are not standardized. Conservatively treat every
-    # token containing a line break as a boundary so scope cannot leak into the
-    # next section; this can truncate scope across manually wrapped lines.
+    # AIR.MS flattened every line break to spaces (20,937 notes have no newlines);
+    # spaCy represents a 3+-space boundary as one whitespace token of length >= 2.
+    # These runs preserve section-header and list boundaries for scope termination.
     ConTextRule(
-        "\n",
+        "   ",
         "TERMINATE",
         direction="TERMINATE",
-        pattern=[{"IS_SPACE": True, "TEXT": {"REGEX": r"[\r\n]+"}}],
+        pattern=[{"IS_SPACE": True, "LENGTH": {">=": 2}}],
+    ),
+    # Bullet characters survive export flattening and separate problem-list
+    # entries, so they terminate scope between otherwise adjacent entries.
+    ConTextRule(
+        "•",
+        "TERMINATE",
+        direction="TERMINATE",
+        pattern=[{"TEXT": "•"}],
     ),
 ]
 
