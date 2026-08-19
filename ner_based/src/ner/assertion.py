@@ -7,19 +7,35 @@ temporality, and experiencer flags on each predicted entity.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Mapping, Tuple, Union
 
 import medspacy
+from loguru import logger
 from medspacy.context import ConTextRule
 from spacy.language import Language
 
+logger.disable("PyRuSH")  # PyRuSH emits ~6 DEBUG lines per sentence
 
 ALLOWED_LABELS = frozenset({"DISEASE", "MEDICATION", "PROCEDURE"})
+
+# Path to the custom spaCy registrations required by the trained model config.
+CUSTOM_CODE_PATH = Path(__file__).resolve().parents[2] / "configs" / "custom_code.py"
 
 # AIR.MS-specific additions to medspaCy's default ConText rules. Each comment
 # records why the cue is included and the direction in which it modifies an
 # entity. Matching is case-insensitive under ConText's default LOWER matcher.
+#
+# Category -> attribute mapping (medspaCy defaults):
+#   NEGATED_EXISTENCE  -> ent._.is_negated
+#   HISTORICAL         -> ent._.is_historical
+#   HYPOTHETICAL       -> ent._.is_hypothetical   (conditional / future)
+#   POSSIBLE_EXISTENCE -> ent._.is_uncertain      (suspected / differential)
+#   FAMILY             -> ent._.is_family
+# Several of these cues duplicate medspaCy's packaged defaults (loaded via
+# load_rules=True). Duplicate matches are idempotent for boolean flags; the
+# rules are restated here so the AIR.MS cue set is explicit and auditable.
 AIRMS_CONTEXT_RULES = [
     # "no": the most common compact pre-negation in problem and review lists.
     ConTextRule("no", "NEGATED_EXISTENCE", direction="FORWARD"),
@@ -40,7 +56,6 @@ AIRMS_CONTEXT_RULES = [
     # "r/o": mapped to negation per the AIR.MS specification; in some notes it
     # instead means an unresolved differential, so this cue requires review.
     ConTextRule("r/o", "NEGATED_EXISTENCE", direction="FORWARD"),
-
     # "h/o": standard abbreviation introducing past medical history.
     ConTextRule("h/o", "HISTORICAL", direction="FORWARD"),
     # "hx of": compact history phrase modifying the following entity.
@@ -59,28 +74,26 @@ AIRMS_CONTEXT_RULES = [
     ConTextRule("previous", "HISTORICAL", direction="FORWARD"),
     # "prior": adjective marking the following entity as historical.
     ConTextRule("prior", "HISTORICAL", direction="FORWARD"),
-
     # "if": conditional plans make subsequent mentions hypothetical.
     ConTextRule("if", "HYPOTHETICAL", direction="FORWARD"),
     # "should": conditional recommendation/planning cue with forward scope.
     ConTextRule("should", "HYPOTHETICAL", direction="FORWARD"),
     # "concern for": introduces a suspected rather than established condition.
-    ConTextRule("concern for", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("concern for", "POSSIBLE_EXISTENCE", direction="FORWARD"),
     # "c/f": compact form of "concern for".
-    ConTextRule("c/f", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("c/f", "POSSIBLE_EXISTENCE", direction="FORWARD"),
     # "possible": explicitly marks the following entity as uncertain.
-    ConTextRule("possible", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("possible", "POSSIBLE_EXISTENCE", direction="FORWARD"),
     # "may represent": interpretation language marking the next entity uncertain.
-    ConTextRule("may represent", "HYPOTHETICAL", direction="FORWARD"),
-    # "versus": both sides of a differential are hypothetical alternatives.
-    ConTextRule("versus", "HYPOTHETICAL", direction="BIDIRECTIONAL"),
+    ConTextRule("may represent", "POSSIBLE_EXISTENCE", direction="FORWARD"),
+    # "versus": both sides of a differential are unconfirmed alternatives.
+    ConTextRule("versus", "POSSIBLE_EXISTENCE", direction="BIDIRECTIONAL"),
     # "vs": abbreviated differential; like "versus", it modifies both sides.
-    ConTextRule("vs", "HYPOTHETICAL", direction="BIDIRECTIONAL"),
+    ConTextRule("vs", "POSSIBLE_EXISTENCE", direction="BIDIRECTIONAL"),
     # "rule out": an unresolved diagnostic instruction, not a confirmed absence.
-    ConTextRule("rule out", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("rule out", "POSSIBLE_EXISTENCE", direction="FORWARD"),
     # "consider": plan/assessment language makes the following entity provisional.
-    ConTextRule("consider", "HYPOTHETICAL", direction="FORWARD"),
-
+    ConTextRule("consider", "POSSIBLE_EXISTENCE", direction="FORWARD"),
     # "mother": assigns the following clinical mention to another experiencer.
     ConTextRule("mother", "FAMILY", direction="FORWARD"),
     # "father": assigns the following clinical mention to another experiencer.
@@ -93,7 +106,6 @@ AIRMS_CONTEXT_RULES = [
     ConTextRule("family history", "FAMILY", direction="FORWARD"),
     # "FHx": compact family-history section shorthand.
     ConTextRule("FHx", "FAMILY", direction="FORWARD"),
-
     # Coordinating contrast ends preceding ConText scope.
     ConTextRule("but", "TERMINATE", direction="TERMINATE"),
     # Sentence-level contrast likewise starts a new assertion scope.
@@ -111,8 +123,27 @@ AIRMS_CONTEXT_RULES = [
     ),
 ]
 
-
 TextInput = Union[str, Tuple[str, str], Mapping[str, Any]]
+
+
+def _load_custom_code(path: Path = CUSTOM_CODE_PATH) -> None:
+    """Register the project's custom spaCy functions before loading a model.
+
+    The trained model config references ``airms.scispacy_tokenizer.v1``, a
+    callback registered in ``configs/custom_code.py``. ``spacy train`` and
+    ``spacy evaluate`` see it via ``--code``; a plain ``spacy.load`` does not,
+    and fails with ``catalogue.RegistryError [E893]``. Importing the module for
+    its registration side effects is what makes model loading work here.
+
+    NOT UNUSED -- do not remove as dead code.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"custom code module not found: {path}")
+    spec = importlib.util.spec_from_file_location("airms_custom_code", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load custom code module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
 
 
 def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
@@ -120,11 +151,20 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
 
     medspaCy's standard ConText rules are loaded first, after which the
     AIR.MS-specific rules above are added. The trained models contain no parser
-    or sentence segmenter, so a spaCy sentencizer is inserted before NER.
+    or sentence segmenter, so PyRuSH is inserted *after* NER: ConText scopes
+    over sentences and needs boundaries, while inserting a component before NER
+    would risk perturbing the entity predictions the model was evaluated on.
+    PyRuSH is used rather than spaCy's punctuation-based ``sentencizer`` because
+    clinical notes contain problem lists, bulleted findings and headers with no
+    terminal punctuation, where a whole section would otherwise collapse into a
+    single sentence and let one negation cue scope over all of it.
     """
     model_path = Path(model_path)
     if not model_path.exists():
         raise FileNotFoundError(f"NER model path does not exist: {model_path}")
+
+    # Must precede any model load; see _load_custom_code.
+    _load_custom_code()
 
     # medspaCy delegates model loading to spaCy, keeps the fine-tuned pipeline,
     # and appends only ConText (with its packaged default rules).
@@ -135,14 +175,11 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
     )
     if "ner" not in nlp.pipe_names:
         raise ValueError(f"spaCy model has no NER component: {model_path}")
-
     sentence_components = {"parser", "senter", "sentencizer", "medspacy_pyrush"}
     if not sentence_components.intersection(nlp.pipe_names):
-        nlp.add_pipe("sentencizer", before="ner")
-
+        nlp.add_pipe("medspacy_pyrush", after="ner")
     context = nlp.get_pipe("medspacy_context")
     context.add(AIRMS_CONTEXT_RULES)
-
     if nlp.pipe_names.index("medspacy_context") <= nlp.pipe_names.index("ner"):
         raise RuntimeError("medspacy_context must run after the NER component")
     return nlp
@@ -165,7 +202,6 @@ def annotate_assertions(
         raise ValueError("nlp must contain NER followed by medspacy_context")
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
-
     stream = _normalise_text_inputs(texts)
     for doc, note_id in nlp.pipe(stream, as_tuples=True, batch_size=batch_size):
         for ent in doc.ents:
@@ -180,6 +216,7 @@ def annotate_assertions(
                 "is_negated": bool(getattr(ent._, "is_negated", False)),
                 "is_historical": bool(getattr(ent._, "is_historical", False)),
                 "is_hypothetical": bool(getattr(ent._, "is_hypothetical", False)),
+                "is_uncertain": bool(getattr(ent._, "is_uncertain", False)),
                 "is_family": bool(getattr(ent._, "is_family", False)),
             }
 
@@ -190,13 +227,11 @@ def _normalise_text_inputs(texts: Iterable[TextInput]) -> Iterator[Tuple[str, st
         if isinstance(item, str):
             yield item, str(index)
             continue
-
         if isinstance(item, Mapping):
             if "note_id" not in item or "text" not in item:
                 raise ValueError("text mappings must contain note_id and text")
             yield str(item["text"]), str(item["note_id"])
             continue
-
         try:
             note_id, text = item
         except (TypeError, ValueError) as exc:
