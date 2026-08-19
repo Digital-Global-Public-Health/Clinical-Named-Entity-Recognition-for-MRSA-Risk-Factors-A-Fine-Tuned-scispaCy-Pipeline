@@ -186,6 +186,14 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
     sentence_components = {"parser", "senter", "sentencizer", "medspacy_pyrush"}
     if not sentence_components.intersection(nlp.pipe_names):
         nlp.add_pipe("medspacy_pyrush", after="ner")
+
+    # Section detection: assigns ent._.section_category. Needed for cases no
+    # local ConText cue can reach -- a drug inside an Allergies list is
+    # affirmed, current and patient-experiencer, so it passes every ConText
+    # axis and would otherwise count as an administered drug.
+    if "medspacy_sectionizer" not in nlp.pipe_names:
+        nlp.add_pipe("medspacy_sectionizer", before="medspacy_context")
+
     context = nlp.get_pipe("medspacy_context")
     context.add(AIRMS_CONTEXT_RULES)
     if nlp.pipe_names.index("medspacy_context") <= nlp.pipe_names.index("ner"):
