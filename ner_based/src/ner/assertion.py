@@ -15,6 +15,7 @@ import medspacy
 from loguru import logger
 from medspacy.context import ConTextRule
 from spacy.language import Language
+from .allergy import add_allergy_rules
 
 logger.disable("PyRuSH")  # PyRuSH emits ~6 DEBUG lines per sentence
 
@@ -187,15 +188,19 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
     if not sentence_components.intersection(nlp.pipe_names):
         nlp.add_pipe("medspacy_pyrush", after="ner")
 
-    # Section detection: assigns ent._.section_category. Needed for cases no
-    # local ConText cue can reach -- a drug inside an Allergies list is
-    # affirmed, current and patient-experiencer, so it passes every ConText
-    # axis and would otherwise count as an administered drug.
+    # Section detection: assigns ent._.section_category as descriptive metadata
+    # only. Nothing downstream reads it -- section *boundaries* are unreliable
+    # on this corpus, because the export has no line breaks and a region only
+    # closes when the next header is matched. The one section that matters is
+    # handled explicitly by airms_allergy instead. Do not enable add_attrs.
     if "medspacy_sectionizer" not in nlp.pipe_names:
         nlp.add_pipe("medspacy_sectionizer", before="medspacy_context")
 
     context = nlp.get_pipe("medspacy_context")
     context.add(AIRMS_CONTEXT_RULES)
+    add_allergy_rules(nlp)
+    if "airms_allergy" not in nlp.pipe_names:
+        nlp.add_pipe("airms_allergy")
     if nlp.pipe_names.index("medspacy_context") <= nlp.pipe_names.index("ner"):
         raise RuntimeError("medspacy_context must run after the NER component")
     return nlp
