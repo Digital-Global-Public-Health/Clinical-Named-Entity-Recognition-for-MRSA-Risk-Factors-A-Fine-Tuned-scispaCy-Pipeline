@@ -40,7 +40,7 @@ fi
 
 CONFIG="configs/ner_sci.cfg"
 CUSTOM_CODE="configs/custom_code.py"
-DEV_DATA="splits/dev.spacy"
+DEV_DATA="${DEV_DATA:-splits/dev_500.spacy}"
 OUTPUT="models/ner_${SIZE}/"
 
 if [[ ! -f "$TRAIN_DATA" ]]; then
