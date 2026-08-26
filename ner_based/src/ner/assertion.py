@@ -56,7 +56,7 @@ AIRMS_CONTEXT_RULES = [
     ConTextRule("rules out", "NEGATED_EXISTENCE", direction="FORWARD"),
     # "r/o": mapped to negation per the AIR.MS specification; in some notes it
     # instead means an unresolved differential, so this cue requires review.
-    ConTextRule("r/o", "NEGATED_EXISTENCE", direction="FORWARD"),
+    ConTextRule("r/o", "POSSIBLE_EXISTENCE", direction="FORWARD"),
     # "h/o": standard abbreviation introducing past medical history.
     ConTextRule("h/o", "HISTORICAL", direction="FORWARD"),
     # "hx of": compact history phrase modifying the following entity.
@@ -155,6 +155,31 @@ def _load_custom_code(path: Path = CUSTOM_CODE_PATH) -> None:
     spec.loader.exec_module(module)
 
 
+# Two of medspaCy's packaged rules mis-fire on this corpus. See
+# scripts/patch_assertion_packaged_rules.py for the evidence.
+PACKAGED_RULE_FIXES = {
+    # Prophylaxis negates the condition being prevented, never the drug.
+    # Restricting to DISEASE keeps `DVT prophylaxis` -> DVT negated, while
+    # `Continue Cefepime   Prophylaxis: acyclovir` no longer negates cefepime.
+    "prophylaxis": {"allowed_types": {"DISEASE"}},
+    # Observed reaching >500 chars backward across section boundaries.
+    ": no": {"max_scope": 5},
+}
+
+
+def _constrain_packaged_rules(context) -> int:
+    """Tighten packaged ConText rules in place. Returns the number changed."""
+    changed = 0
+    for rule in context.rules:
+        fix = PACKAGED_RULE_FIXES.get((rule.literal or "").lower())
+        if not fix:
+            continue
+        for attr, value in fix.items():
+            setattr(rule, attr, value)
+        changed += 1
+    return changed
+
+
 def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
     """Load a fine-tuned AIR.MS NER model and append medspaCy ConText.
 
@@ -197,6 +222,7 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
         nlp.add_pipe("medspacy_sectionizer", before="medspacy_context")
 
     context = nlp.get_pipe("medspacy_context")
+    _constrain_packaged_rules(context)
     context.add(AIRMS_CONTEXT_RULES)
     add_allergy_rules(nlp)
     if "airms_allergy" not in nlp.pipe_names:
