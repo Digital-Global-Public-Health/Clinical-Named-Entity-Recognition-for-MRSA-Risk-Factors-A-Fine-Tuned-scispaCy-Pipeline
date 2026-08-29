@@ -9,7 +9,7 @@ names = [n for n in z.namelist()
 
 rows, per_doc = [], {}
 for n in sorted(names):
-    note = n.split('/')[1].replace('.tsv', '')
+    note = os.path.splitext(n.split('/')[1])[0]
     feats, groups, auto = None, defaultdict(list), 0
     for line in z.read(n).decode('utf-8').splitlines():
         if line.startswith('#T_SP='):
