@@ -1,0 +1,39 @@
+import pandas as pd
+import numpy as np
+
+SEED  = 7
+KEEP  = ['P02', 'P03', 'P08', 'P09']
+TYPES = ['Progress Notes', 'Consults', 'H&P', 'Discharge Summary']
+DONE  = ['109981187', '110220141', '110577574',
+         '110721936', '136602524', '141317604']
+
+m = pd.read_csv('splits/manifest.csv', dtype={'note_id': str, 'person_id': str})
+test = m[m.split == 'test'].copy()
+pmap = {p: f'P{i:02d}' for i, p in enumerate(sorted(test.person_id.unique()), 1)}
+test['P'] = test.person_id.map(pmap)
+
+have = set(zip(test[test.note_id.isin(DONE)].P,
+               test[test.note_id.isin(DONE)].note_type))
+pool = test[~test.note_id.isin(DONE)]
+
+rng, picks = np.random.default_rng(SEED), []
+for p in KEEP:
+    for t in TYPES:
+        if (p, t) in have:
+            continue
+        c = pool[(pool.P == p) & (pool.note_type == t)].sort_values('note_id')
+        if c.empty:
+            print(f'!! no candidate for {p} / {t}')
+            continue
+        if len(c) == 1:
+            print(f'   note: {p} / {t} drawn from a pool of 1 (forced)')
+        picks.append(c.iloc[[rng.integers(len(c))]])
+
+new = pd.concat(picks)
+print()
+print(new[['note_id', 'P', 'note_type', 'n_chars', 'n_entities']].to_string(index=False))
+print(f'\n{len(new)} new notes | {int(new.n_chars.sum()):,} chars | '
+      f'{int(new.n_entities.sum())} silver entities')
+
+new[['note_id', 'P', 'note_type', 'n_chars']].to_csv('splits/new_gold_10.csv', index=False)
+print('wrote splits/new_gold_10.csv')
