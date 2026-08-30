@@ -16,3 +16,6 @@ ollama_*.out
 **/annotations/preannotations*/
 **/outputs/
 .venv*/
+*.zip
+access_log.txt
+logs/
