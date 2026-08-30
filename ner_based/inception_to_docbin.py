@@ -34,13 +34,58 @@ VALID = {"DISEASE", "MEDICATION", "PROCEDURE"}
 CELL = re.compile(r"^(?P<label>[^\[\]|]*?)(?:\[(?P<cid>\d+)\])?$")
 
 
-def parse_webanno_tsv(text):
+
+def text_from_tsv(raw):
+    """Reconstruct document text from token rows.
+
+    Project 6's six pilot notes were imported as ctsv3, so source/<name> is an
+    annotation file, not the note. Token rows carry absolute char offsets, so
+    placing each token at its offset reproduces text with exact offsets."""
+    toks = []
+    end_max = 0
+    for line in raw.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) < 3 or "-" not in cols[1]:
+            continue
+        try:
+            b, e = (int(x) for x in cols[1].split("-", 1))
+        except ValueError:
+            continue
+        toks.append((b, e, cols[2]))
+        end_max = max(end_max, e)
+    buf = [" "] * end_max
+    for b, e, t in toks:
+        for i, ch in enumerate(t[: e - b]):
+            buf[b + i] = ch
+    return "".join(buf)
+
+
+def label_column(text, default=4):
+    """Locate the entity-label column from the #T_SP= header.
+    Project 4 has one feature (the label); project 6 has six, with the
+    label in 'value'. Falls back to the historical hardcoded index."""
+    for line in text.splitlines():
+        if line.startswith("#T_SP="):
+            feats = line.split("|")[1:]
+            if "value" in feats:
+                return 3 + feats.index("value")
+            return 3 + len(feats) - 1
+        if not line.startswith("#") and line.strip():
+            break
+    return default
+
+
+def parse_webanno_tsv(text, col=None):
     """Return [(label, start_char, end_char), ...] for one document.
 
     Single-token spans carry a bare label; multi-token spans carry a
     disambiguation id in brackets that is shared by every token of the span,
     so those are merged by (label, id).
     """
+    if col is None:
+        col = label_column(text)
     chained = {}
     singles = []
     for line in text.splitlines():
@@ -48,13 +93,13 @@ def parse_webanno_tsv(text):
         if not line.strip() or line.startswith("#"):
             continue
         cols = line.split("\t")
-        if len(cols) < 5 or "-" not in cols[1]:
+        if len(cols) <= col or "-" not in cols[1]:
             continue
         try:
             begin, end = (int(x) for x in cols[1].split("-", 1))
         except ValueError:
             continue
-        for item in cols[4].split("|"):
+        for item in cols[col].split("|"):
             item = item.strip()
             if item in ("_", "", "*"):
                 continue
@@ -124,8 +169,10 @@ def main():
             stats["missing_source"] += 1
             continue
 
-        text = zf.read(src_name).decode("utf-8")
         raw = zf.read(tsv_name).decode("utf-8")
+        text = zf.read(src_name).decode("utf-8")
+        if text.startswith("#FORMAT=WebAnno"):
+            text = text_from_tsv(raw)
         parsed = parse_webanno_tsv(raw)
 
         if not parsed and not args.keep_empty:
