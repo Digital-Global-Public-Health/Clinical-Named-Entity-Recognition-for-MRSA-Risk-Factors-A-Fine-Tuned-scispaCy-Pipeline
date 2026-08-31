@@ -94,7 +94,7 @@ AIRMS_CONTEXT_RULES = [
     # "rule out": an unresolved diagnostic instruction, not a confirmed absence.
     ConTextRule("rule out", "POSSIBLE_EXISTENCE", direction="FORWARD"),
     # "consider": plan/assessment language makes the following entity provisional.
-    ConTextRule("consider", "POSSIBLE_EXISTENCE", direction="FORWARD"),
+    ConTextRule("consider", "HYPOTHETICAL", direction="FORWARD"),
     # "mother": assigns the following clinical mention to another experiencer.
     ConTextRule("mother", "FAMILY", direction="FORWARD"),
     # "father": assigns the following clinical mention to another experiencer.
@@ -108,6 +108,37 @@ AIRMS_CONTEXT_RULES = [
     # "FHx": compact family-history section shorthand.
     ConTextRule("FHx", "FAMILY", direction="FORWARD"),
     # Coordinating contrast ends preceding ConText scope.
+    # --- hypothetical cue families, added 2026-08-31 -------------------------
+    # Derived from the 16-note gold set: the axis previously had only "if" and
+    # "should" and scored 3 TP / 38 FN. 26 of the 38 misses were PROCEDURE, so
+    # planned and pending studies were entering the feature layer as performed.
+    # NOTE: these cues were developed against the gold set, so any F1 reported
+    # for the hypothetical axis is an upper bound, not a held-out estimate.
+
+    # Planned interventions: the entity is proposed, not performed.
+    ConTextRule("plan for", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("plan is to", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("planned for", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("will need", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("needs", "HYPOTHETICAL", direction="FORWARD"),
+    # Proposals from a consulting service. Guideline B5 treats these as
+    # hypothetical: the note records the proposal, not the administration.
+    ConTextRule("recommend", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("recommends", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("recommending", "HYPOTHETICAL", direction="FORWARD"),
+    ConTextRule("suggest", "HYPOTHETICAL", direction="FORWARD"),
+    # Watch-for lists name side effects to anticipate, not present findings.
+    ConTextRule("monitor for", "HYPOTHETICAL", direction="FORWARD"),
+    # Conditional administration: "hold for active bleeding".
+    ConTextRule("hold for", "HYPOTHETICAL", direction="FORWARD"),
+    # Study purpose: the entity is what is being looked for.
+    ConTextRule("for detection of", "HYPOTHETICAL", direction="FORWARD"),
+    # Postpositive in this corpus -- "CT chest pending", "MRI pending" --
+    # so these scope backward onto the preceding study, not forward.
+    ConTextRule("pending", "HYPOTHETICAL", direction="BACKWARD"),
+    ConTextRule("ordered", "HYPOTHETICAL", direction="BACKWARD"),
+    # --- end hypothetical additions ------------------------------------------
+
     ConTextRule("but", "TERMINATE", direction="TERMINATE"),
     # Sentence-level contrast likewise starts a new assertion scope.
     ConTextRule("however", "TERMINATE", direction="TERMINATE"),
@@ -164,6 +195,13 @@ PACKAGED_RULE_FIXES = {
     "prophylaxis": {"allowed_types": {"DISEASE"}},
     # Observed reaching >500 chars backward across section boundaries.
     ": no": {"max_scope": 5},
+    # Guideline B6: a PRN indication is affirmed, not hypothetical --
+    # "as needed for Cough" prescribes the drug; it does not hypothesise
+    # the cough. For some patients the medication-list indication is the
+    # only place a symptom is documented, so hypothesising it would make
+    # the symptom invisible to the feature layer. Restricting scope to 0
+    # disables the rule while leaving the decision visible here.
+    "as needed": {"max_scope": 0},
 }
 
 
