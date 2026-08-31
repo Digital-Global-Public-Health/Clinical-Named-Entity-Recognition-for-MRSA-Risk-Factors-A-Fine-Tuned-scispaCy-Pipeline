@@ -107,6 +107,15 @@ AIRMS_CONTEXT_RULES = [
     ConTextRule("family history", "FAMILY", direction="FORWARD"),
     # "FHx": compact family-history section shorthand.
     ConTextRule("FHx", "FAMILY", direction="FORWARD"),
+    # Family history arrives as a table -- "Cancer  Mother  gastric" -- so
+    # the relation word FOLLOWS the condition and FORWARD rules scope away
+    # from it. Only the grandparent literals are new; adding BACKWARD
+    # duplicates of mother/father/sister/brother added false positives
+    # without adding true positives, so they are left FORWARD-only.
+    ConTextRule("paternal grandfather", "FAMILY", direction="BACKWARD", max_scope=5),
+    ConTextRule("paternal grandmother", "FAMILY", direction="BACKWARD", max_scope=5),
+    ConTextRule("maternal grandfather", "FAMILY", direction="BACKWARD", max_scope=5),
+    ConTextRule("maternal grandmother", "FAMILY", direction="BACKWARD", max_scope=5),
     # Coordinating contrast ends preceding ConText scope.
     # --- hypothetical cue families, added 2026-08-31 -------------------------
     # Derived from the 16-note gold set: the axis previously had only "if" and
@@ -202,6 +211,10 @@ PACKAGED_RULE_FIXES = {
     # the symptom invisible to the feature layer. Restricting scope to 0
     # disables the rule while leaving the decision visible here.
     "as needed": {"max_scope": 0},
+    # Bare "family" fires on provenance lines ("Source: Patient, Family and
+    # Team") and scopes forward over flattened text into unrelated sections.
+    # The AIR.MS rules cover the real cases.
+    "family": {"max_scope": 0},
 }
 
 
