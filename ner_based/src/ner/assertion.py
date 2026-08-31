@@ -135,8 +135,8 @@ AIRMS_CONTEXT_RULES = [
     ConTextRule("for detection of", "HYPOTHETICAL", direction="FORWARD"),
     # Postpositive in this corpus -- "CT chest pending", "MRI pending" --
     # so these scope backward onto the preceding study, not forward.
-    ConTextRule("pending", "HYPOTHETICAL", direction="BACKWARD"),
-    ConTextRule("ordered", "HYPOTHETICAL", direction="BACKWARD"),
+    ConTextRule("pending", "HYPOTHETICAL", direction="BACKWARD", max_scope=5),
+    ConTextRule("ordered", "HYPOTHETICAL", direction="BACKWARD", max_scope=5),
     # --- end hypothetical additions ------------------------------------------
 
     ConTextRule("but", "TERMINATE", direction="TERMINATE"),
