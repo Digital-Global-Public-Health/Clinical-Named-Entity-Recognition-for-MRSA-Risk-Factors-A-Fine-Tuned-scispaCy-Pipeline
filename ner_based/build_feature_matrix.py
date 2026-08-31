@@ -17,7 +17,7 @@ them is not evidence that the thing occurred:
 evidence but it is evidence, and these features are sparse. Uncertain
 mentions are counted separately so the sensitivity can be reported.
 
-Temporality is NOT a gate. It scores 38.7 F1 (26-08 measurement), so gating on
+Temporality is NOT a gate. It scores 60.7 F1 (31-08, sectionizer capped at max_section_length=120), so gating on
 it would silently zero out most true positives. Instead each feature carries a
 companion count of how many of its supporting mentions were marked historical,
 from which an `_all_hist` flag is derived at any aggregation level. This
