@@ -61,6 +61,13 @@ NEXT_HDR = re.compile(
 MAX_CHARS = 300
 
 
+NEGATED_HDR = re.compile(
+    r"\b(no known (drug |medication )?allerg\w*|nkda|nkma|\bnka\b|"
+    r"denies allerg\w*|allergies?\s*:?\s*(none|nil))\b",
+    re.I)
+NEGATED_HDR_WINDOW = 60
+
+
 def governed_by_header(text: str, start: int, headers, window: int = MAX_CHARS):
     """Return the allergy header whose region contains `start`, or None.
 
@@ -78,6 +85,21 @@ def governed_by_header(text: str, start: int, headers, window: int = MAX_CHARS):
     if start - best.end() > window:
         return None
     if NEXT_HDR.search(text, best.end(), start):
+        return None
+    # An allergy header that immediately negates itself governs nothing.
+    # "No Known Allergies   Scheduled Medications: ..." otherwise opens a
+    # 300-char region over the medication list and flags every drug in it
+    # as an allergen. In a 40-span adjudicated corpus sample this was 12 of
+    # 14 false positives -- the dominant failure mode of the header path,
+    # not the rare residual it was previously recorded as. Note the ConText
+    # pseudo-modifiers only suppress the inline-cue path, never this one.
+    # ALLERGY_HDR allows up to two words before "allergies", so the match
+    # itself swallows the negation: "No Known Allergies" IS the header.
+    # Check the matched text, then the region that follows it.
+    if NEGATED_HDR.search(best.group()):
+        return None
+    if NEGATED_HDR.search(text, best.end(),
+                          best.end() + NEGATED_HDR_WINDOW):
         return None
     return best
 
