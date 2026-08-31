@@ -270,7 +270,16 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
     # closes when the next header is matched. The one section that matters is
     # handled explicitly by airms_allergy instead. Do not enable add_attrs.
     if "medspacy_sectionizer" not in nlp.pipe_names:
-        nlp.add_pipe("medspacy_sectionizer", before="medspacy_context")
+        # span_attrs=None: the sectionizer keeps assigning section_category
+        # (descriptive only) but stops writing assertion attributes. Its
+        # default rules set is_family for spans inside a family_history
+        # section -- and because the AIR.MS export has no newlines, a
+        # section runs to the next *matched* header. In one gold note the
+        # family_history section swallowed the entire prior-to-admission
+        # medication list, producing all 18 experiencer false positives.
+        # ConText owns the assertion axes.
+        nlp.add_pipe("medspacy_sectionizer", before="medspacy_context",
+                     config={"span_attrs": None})
 
     context = nlp.get_pipe("medspacy_context")
     _constrain_packaged_rules(context)
