@@ -116,7 +116,10 @@ def score(pairs, key=lambda n: True):
             exact[lab][0] += tp
             exact[lab][1] += len(p) - tp
             exact[lab][2] += len(g) - tp
-            gl, pl = list(g), list(p)
+            # sorted so greedy assignment is deterministic: longest
+            # span first, then by start offset
+            gl = sorted(g, key=lambda x: (-(x[1]-x[0]), x[0]))
+            pl = sorted(p, key=lambda x: (-(x[1]-x[0]), x[0]))
             used_g, used_p = set(), set()
             for i, ps in enumerate(pl):
                 for j, gs in enumerate(gl):
