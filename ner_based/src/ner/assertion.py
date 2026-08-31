@@ -270,7 +270,11 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
     # closes when the next header is matched. The one section that matters is
     # handled explicitly by airms_allergy instead. Do not enable add_attrs.
     if "medspacy_sectionizer" not in nlp.pipe_names:
-        # span_attrs=None: the sectionizer keeps assigning section_category
+        # max_section_length bounds the leak rather than disabling section
+        # attributes entirely. Disabling them cost real signal: ~120 family
+        # strokes entered the feature matrix as the patient in a corpus
+        # comparison. Capping keeps correctly-bounded sections.
+        # (former note) span_attrs=None: the sectionizer keeps section_category
         # (descriptive only) but stops writing assertion attributes. Its
         # default rules set is_family for spans inside a family_history
         # section -- and because the AIR.MS export has no newlines, a
@@ -279,7 +283,7 @@ def build_assertion_pipeline(model_path: Union[str, Path]) -> Language:
         # medication list, producing all 18 experiencer false positives.
         # ConText owns the assertion axes.
         nlp.add_pipe("medspacy_sectionizer", before="medspacy_context",
-                     config={"span_attrs": None})
+                     config={"max_section_length": 120})
 
     context = nlp.get_pipe("medspacy_context")
     _constrain_packaged_rules(context)
