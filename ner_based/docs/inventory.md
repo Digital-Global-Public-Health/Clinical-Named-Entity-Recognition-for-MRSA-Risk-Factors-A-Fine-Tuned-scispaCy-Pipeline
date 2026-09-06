@@ -54,7 +54,7 @@ for provenance and are not build steps. They live in `archive/`.
 | `patch_lexicon_03.py` | Added feature 48 `other_indwelling_device`; moved `oht` to `immunosuppressed_state`; acronym sweep | `lexicon.yaml` |
 | `patch_assertion_packaged_rules.py` | Constrained two mis-firing packaged medspaCy rules (`prophylaxis`, `: no`) | `PACKAGED_RULE_FIXES` in `src/ner/assertion.py` |
 | `reverify.py` | Replayed stored proposals through the fixed word-boundary matcher, holding model output constant | `annotations/batch01_v2/` |
-| `compare_runs.py` | Span-overlap comparison of `llama3.1:70b` against `gemma3:27b` pre-annotations | the choice of llama as teacher |
+| `compare_runs.py` | Span-overlap comparison of `llama3.1:70b` against `gemma3:27b` pre-annotations | the choice of the llama family as teacher; the production run used `llama3.3:70b` |
 | `procedure_gap.py` | The same comparison restricted to PROCEDURE spans | the same choice |
 | `check_reuse.py` | Which already-annotated pilot notes could be reused when extending the gold set | the 16-note gold set composition |
 | `draw_new_gold.py` | Drew the ten extension notes (seed 7, four patients x four note types) | `splits/new_gold_10.csv`, the 16-note gold set |

@@ -47,7 +47,11 @@ re-running them will abort rather than double-apply.
 | `procedure_gap.py` | The same comparison restricted to PROCEDURE spans, the label the two models disagreed on most |
 | `test_prompt_variants.py` | Whether the teacher's recall improves more from reframing the prompt as exhaustive extraction or from multi-pass union. Settled the production prompt now in `src/ner/preannotate.py`. Note the `test_` prefix is historical and does not indicate a pytest module; it lives here partly so `pytest` no longer collects it |
 
-Outcome: llama was kept as the teacher, with the current single-pass prompt.
+Outcome: the llama family was kept as the teacher, with the current single-pass
+prompt. These scripts compared `llama3.1:70b` against `gemma3:27b`; the
+production pre-annotation run that produced `annotations/batch01_v2`, `batch02`
+and `batch03` used `llama3.3:70b`. Do not read the model name in these scripts
+as the production teacher -- see known gap 4 in the top-level README.
 
 ## Gold set extension (6 notes -> 16)
 

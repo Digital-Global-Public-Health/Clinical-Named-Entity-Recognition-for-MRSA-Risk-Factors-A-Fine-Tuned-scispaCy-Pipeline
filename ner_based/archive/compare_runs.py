@@ -6,8 +6,12 @@ spans both found, the spans unique to each, and their Jaccard overlap, matching
 on (lowercased text, label) rather than offsets so tokenization differences do
 not count as disagreement.
 
-Used 2026-08-10. llama was kept as the teacher. ``procedure_gap.py`` is the same
+Used 2026-08-10. The llama family was kept. ``procedure_gap.py`` is the same
 comparison narrowed to PROCEDURE, the label the two models diverged on most.
+
+The ``llama3.1:70b`` named here is this comparison's model, not the production
+teacher: the run that produced ``annotations/batch01_v2``, ``batch02`` and
+``batch03`` used ``llama3.3:70b``.
 
 Both smoke-run directories it reads are enclave-local and gitignored.
 """

@@ -10,7 +10,9 @@ text, and de-duplicates by span text so a term repeated through a note does not
 pad the lists. Prints, per note, what both models found, what gemma missed, and
 what only gemma found.
 
-Used 2026-08-10, alongside ``compare_runs.py``. llama was kept as the teacher.
+Used 2026-08-10, alongside ``compare_runs.py``. The llama family was kept; the
+model named there is this comparison's, not the production teacher, which was
+``llama3.3:70b``.
 
 Both smoke-run directories it reads are enclave-local and gitignored.
 """

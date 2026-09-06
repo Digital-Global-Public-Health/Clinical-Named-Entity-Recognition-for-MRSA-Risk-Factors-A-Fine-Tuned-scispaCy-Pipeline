@@ -410,7 +410,7 @@ what the artefacts were produced with.
 | spaCy | 3.x, config schema v3 | `configs/ner_sci.cfg` |
 | Base model | `en_core_sci_sm` (scispaCy) | `configs/custom_code.py`, `build_splits.py`, `inception_to_docbin.py` |
 | Assertion | `medspacy==1.3.1`, ConText + PyRuSH + sectionizer | `requirements.txt`, `src/ner/assertion.py` |
-| Teacher | a local Ollama chat model | `src/ner/preannotate.py` |
+| Teacher | `llama3.3:70b` via a local Ollama endpoint; see known gap 4 on how this is evidenced | `src/ner/preannotate.py`, `docs/annotation_guidelines.md` |
 | Others | `pandas`, `numpy`, `pyyaml`, `typer`, `rich`, `loguru`, `requests`, `python-dotenv` | imports across `src/` and the root scripts |
 
 Verify the tok2vec width before training in a new environment:
@@ -456,10 +456,18 @@ actually run.
 3. **Gold DocBin path is inconsistent.** Most scripts default to
    `annotations/gold_export/gold.spacy`; the usage examples in `eval_gold.py`
    and `eval_teacher.py` show `/tmp/gold16.spacy`.
-4. **Teacher model name is inconsistent.** `docs/annotation_guidelines.md` names
-   `llama3.3:70b`; `archive/compare_runs.py` names `llama3.1:70b`;
-   `eval_teacher.py` says only "llama". The actual model came from
-   `$OLLAMA_MODEL` at run time and is not recorded in the repository.
+4. **The production teacher model is not recorded in the run artefacts.** The
+   model came from `$OLLAMA_MODEL` at run time, and
+   `annotations/batch01_v2`, `batch02` and `batch03` carry only verification
+   counters -- no config snapshot and no job log survives. The identification as
+   `llama3.3:70b` rests on the run-directory naming
+   (`preannotations_c1_llama33`, distinct from the `gemma3` and
+   `v0325_llama70b` comparison runs) and on
+   `docs/annotation_guidelines.md`, which names it. Note that
+   `archive/compare_runs.py` names `llama3.1:70b`: that script belongs to the
+   earlier llama-versus-gemma comparison and does not describe the production
+   run. Future runs should snapshot the resolved model name alongside
+   `run_summary.json`.
 5. **`docs/assertion.md` says the report writes "four flags"**; it writes five.
    `is_uncertain` was added later and is missing from that document's attribute
    list.
