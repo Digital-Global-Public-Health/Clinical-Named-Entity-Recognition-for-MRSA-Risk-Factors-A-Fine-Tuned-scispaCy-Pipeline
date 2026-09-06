@@ -196,7 +196,7 @@ def _load_custom_code(path: Path = CUSTOM_CODE_PATH) -> None:
 
 
 # Two of medspaCy's packaged rules mis-fire on this corpus. See
-# scripts/patch_assertion_packaged_rules.py for the evidence.
+# archive/patch_assertion_packaged_rules.py for the evidence.
 PACKAGED_RULE_FIXES = {
     # Prophylaxis negates the condition being prevented, never the drug.
     # Restricting to DISEASE keeps `DVT prophylaxis` -> DVT negated, while
