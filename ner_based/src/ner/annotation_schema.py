@@ -199,7 +199,7 @@ class AnnotationSchemaConfig:
     entity_types: List[str] = field(
         default_factory=lambda: ["DISEASE", "MEDICATION", "PROCEDURE"]
     )
-    guidelines_out_path: Path = Path("annotations/annotation_guidelines.md")
+    guidelines_out_path: Path = Path("annotations/schema_reference.md")
     debug: bool = False
 
 
@@ -362,7 +362,7 @@ class AnnotationSchema:
         """
         self.cfg.guidelines_out_path.parent.mkdir(parents=True, exist_ok=True)
         lines = [
-            "# MRSA NER Annotation Guidelines",
+            "# MRSA NER Entity Schema Reference",
             "",
             "Use `CONTRACT.md` as the source of truth for training-data format.",
             "",

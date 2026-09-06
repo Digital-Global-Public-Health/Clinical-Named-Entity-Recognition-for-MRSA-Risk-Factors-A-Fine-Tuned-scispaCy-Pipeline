@@ -410,7 +410,7 @@ what the artefacts were produced with.
 | spaCy | 3.x, config schema v3 | `configs/ner_sci.cfg` |
 | Base model | `en_core_sci_sm` (scispaCy) | `configs/custom_code.py`, `build_splits.py`, `inception_to_docbin.py` |
 | Assertion | `medspacy==1.3.1`, ConText + PyRuSH + sectionizer | `requirements.txt`, `src/ner/assertion.py` |
-| Teacher | `llama3.3:70b` via a local Ollama endpoint; see known gap 4 on how this is evidenced | `src/ner/preannotate.py`, `docs/annotation_guidelines.md` |
+| Teacher | `llama3.3:70b` via a local Ollama endpoint; see note 2 under [Notes for re-running](#notes-for-re-running) | `src/ner/preannotate.py`, `docs/annotation_guidelines.md` |
 | Others | `pandas`, `numpy`, `pyyaml`, `typer`, `rich`, `loguru`, `requests`, `python-dotenv` | imports across `src/` and the root scripts |
 
 Verify the tok2vec width before training in a new environment:
@@ -441,22 +441,15 @@ outside `outputs/` and `annotations/`.
 
 ---
 
-## Known gaps
+## Notes for re-running
 
-Recorded rather than fixed, because several are facts about how the work was
-actually run.
+What someone repeating this work needs to know. These are facts about how the
+run happened, not defects to be fixed.
 
-1. **`splits/dev_500.spacy` is not regenerable.** See above. This is the largest
+1. **`splits/dev_500.spacy` is not regenerable.** See
+   [Reproducibility](#what-can-and-cannot-be-reproduced). This is the largest
    reproducibility gap.
-2. **Default model path differs between scripts.** `build_feature_matrix.py`,
-   `score_assertions.py` and `sample_allergy.py` default to
-   `models/ner_full/model-best`; `scripts/assertion_report.py` and
-   `scripts/ablate_context_rules.py` default to `models/ner_10000/model-best`.
-   Pass `--model` explicitly.
-3. **Gold DocBin path is inconsistent.** Most scripts default to
-   `annotations/gold_export/gold.spacy`; the usage examples in `eval_gold.py`
-   and `eval_teacher.py` show `/tmp/gold16.spacy`.
-4. **The production teacher model is not recorded in the run artefacts.** The
+2. **The production teacher model is not recorded in the run artefacts.** The
    model came from `$OLLAMA_MODEL` at run time, and
    `annotations/batch01_v2`, `batch02` and `batch03` carry only verification
    counters -- no config snapshot and no job log survives. The identification as
@@ -469,32 +462,25 @@ actually run.
    run. The `preannotate` config snapshot now records `model_resolved`
    alongside `model_requested`, so future runs carry the name; the three
    existing batches predate that and cannot be back-filled.
-5. **`docs/assertion.md` says the report writes "four flags"**; it writes five.
+3. **`docs/assertion.md` says the report writes "four flags"**; it writes five.
    `is_uncertain` was added later and is missing from that document's attribute
    list.
-6. **Two files named `annotation_guidelines.md`.** `docs/annotation_guidelines.md`
-   is the hand-written thesis standard. `src/ner/annotation_schema.py`
-   *generates* a different, much shorter one at
-   `annotations/annotation_guidelines.md`. Only the first was used.
-7. **`lexicon.yaml`'s header says 47 features**; it defines 48. Feature 48,
-   `other_indwelling_device`, is corpus-derived rather than literature-derived
-   and its provenance differs from features 1–47 — the file says so in place.
-8. **Scripts with unresolvable inputs.** `which_cue.py` and `which_cue_exp.py`
+4. **Scripts with unresolvable inputs.** `which_cue.py` and `which_cue_exp.py`
    read `/tmp/gold16_txt/`; `archive/check_recommender_overlap.py` reads
    `/tmp/gold_verify_spans.csv` and a `gold25_backup_*.zip`; `review_lexicon.py`
    needs `lexicon_candidates.csv`. None of these is produced by anything in the
    repository; all were enclave-local scratch files.
-9. **`split_docbin.py`** appears superseded by `build_splits.py` — it is a
+5. **`split_docbin.py`** appears superseded by `build_splits.py` -- it is a
    two-way split of a single `contract_docbin` DocBin, keyed on `patient_id`,
    which only `preannotation_serializers.write_contract_docbin` writes. Kept
    because that cannot be confirmed from the code alone.
-10. **Duplicated scoring logic.** `eval_gold.py` and `eval_teacher.py` carry
-    identical `prf`/`overlaps`/`score`/`report` blocks; `teacher_vs_gold.py` and
-    `analyse_teacher_misses.py` re-implement `prf` again.
-    `build_feature_matrix.py` and `review_lexicon.py` each implement `__ref__`
-    expansion for the lexicon. Left alone: `eval_gold.py` and `eval_teacher.py`
-    produced committed results and should not be perturbed.
-11. **No test coverage** for the assertion layer or the feature matrix.
+6. **Duplicated scoring logic.** `eval_gold.py` and `eval_teacher.py` carry
+   identical `prf`/`overlaps`/`score`/`report` blocks; `teacher_vs_gold.py` and
+   `analyse_teacher_misses.py` re-implement `prf` again.
+   `build_feature_matrix.py` and `review_lexicon.py` each implement `__ref__`
+   expansion for the lexicon. Left alone: `eval_gold.py` and `eval_teacher.py`
+   produced committed results and should not be perturbed.
+7. **No test coverage** for the assertion layer or the feature matrix.
 
 ## Inherited scaffold
 

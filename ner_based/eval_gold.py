@@ -11,7 +11,7 @@ reported alongside, since boundary disagreement and missed entities are
 different failure modes and PROCEDURE recall is the question of interest.
 
 Usage:
-  python eval_gold.py --gold /tmp/gold16.spacy --models models/ner_*
+  python eval_gold.py --gold annotations/gold_export/gold.spacy --models models/ner_*
 """
 import argparse
 import sys

@@ -19,7 +19,7 @@ from src.ner.assertion import ALLOWED_LABELS, annotate_assertions, build_asserti
 
 
 DEFAULT_DOCBIN = PROJECT_ROOT / "annotations/gold_export/gold.spacy"
-DEFAULT_MODEL = PROJECT_ROOT / "models/ner_10000/model-best"
+DEFAULT_MODEL = PROJECT_ROOT / "models/ner_full/model-best"
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/assertion_review/assertion_report.csv"
 ASSERTION_FLAGS = (
     "is_negated",

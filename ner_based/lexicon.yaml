@@ -1,6 +1,8 @@
 # MRSA NER feature lexicon
 #
-# Maps extracted entity strings to the 47 features in mrsa_ner_feature_list.xlsx.
+# Maps extracted entity strings to 48 features: the 47 in
+# mrsa_ner_feature_list.xlsx, plus other_indwelling_device, which is
+# corpus-derived rather than literature-derived (see its own notes).
 #
 # THESE ARE SEED PATTERNS, NOT A FINISHED LEXICON. Every feature must be
 # reviewed against the corpus vocabulary with review_lexicon.py before use --

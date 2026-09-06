@@ -235,8 +235,11 @@ def prepare_annotations(
         False, "--include-severity", help="Add optional SEVERITY entity type."
     ),
     guidelines_out: Path = typer.Option(
-        Path("annotations/annotation_guidelines.md"),
-        help="Where to write the Markdown guidelines document.",
+        # Not docs/annotation_guidelines.md: that is the hand-written
+        # annotation standard. This command writes a generated entity-schema
+        # reference, and the two must not collide.
+        Path("annotations/schema_reference.md"),
+        help="Where to write the generated Markdown entity-schema reference.",
     ),
     schema_json_out: Optional[Path] = typer.Option(
         None, help="Where to write schema.json for annotation tools (optional)."

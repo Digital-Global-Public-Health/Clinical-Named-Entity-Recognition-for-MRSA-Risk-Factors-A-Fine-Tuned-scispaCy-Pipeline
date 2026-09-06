@@ -12,7 +12,7 @@ python scripts/assertion_sample.py
 ```
 
 The report defaults to `annotations/gold_export/gold.spacy`,
-`models/ner_10000/model-best`, and
+`models/ner_full/model-best`, and
 `outputs/assertion_review/assertion_report.csv`. To review another learning
 curve model or write a named report:
 

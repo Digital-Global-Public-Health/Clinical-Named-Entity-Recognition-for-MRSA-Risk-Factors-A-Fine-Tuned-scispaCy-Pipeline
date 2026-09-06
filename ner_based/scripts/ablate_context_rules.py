@@ -15,7 +15,7 @@ from spacy.tokens import DocBin
 from src.ner.assertion import AIRMS_CONTEXT_RULES, ALLOWED_LABELS, _load_custom_code
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MODEL = PROJECT_ROOT / "models/ner_10000/model-best"
+MODEL = PROJECT_ROOT / "models/ner_full/model-best"
 GOLD = PROJECT_ROOT / "annotations/gold_export/gold.spacy"
 FLAGS = ["is_negated", "is_historical", "is_hypothetical", "is_uncertain", "is_family"]
 

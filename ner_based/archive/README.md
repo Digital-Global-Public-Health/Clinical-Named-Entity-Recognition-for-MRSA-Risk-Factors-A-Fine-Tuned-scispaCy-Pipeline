@@ -51,7 +51,8 @@ Outcome: the llama family was kept as the teacher, with the current single-pass
 prompt. These scripts compared `llama3.1:70b` against `gemma3:27b`; the
 production pre-annotation run that produced `annotations/batch01_v2`, `batch02`
 and `batch03` used `llama3.3:70b`. Do not read the model name in these scripts
-as the production teacher -- see known gap 4 in the top-level README.
+as the production teacher -- see note 2 under "Notes for re-running" in
+the top-level README.
 
 ## Gold set extension (6 notes -> 16)
 

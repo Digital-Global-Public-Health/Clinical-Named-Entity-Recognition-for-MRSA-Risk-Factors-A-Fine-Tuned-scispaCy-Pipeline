@@ -10,7 +10,7 @@ the silver corpus) and scores them exactly as eval_gold.py scores a model:
 exact and partial match, per label, with a pilot/extension split.
 
 Usage:
-  python eval_teacher.py --gold /tmp/gold16.spacy
+  python eval_teacher.py --gold annotations/gold_export/gold.spacy
 """
 import argparse
 import glob

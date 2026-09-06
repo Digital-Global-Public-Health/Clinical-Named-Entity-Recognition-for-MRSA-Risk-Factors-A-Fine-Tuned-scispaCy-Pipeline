@@ -111,9 +111,9 @@ return and logs `Cohort built: 0 persons`, exiting 0.
   `detect_negation` raise `NotImplementedError`. Superseded by
   `build_feature_matrix.py`, which runs the assertion pipeline directly.
 - `src/ner/annotation_schema.py` — implemented. Its `export_guidelines()` writes
-  a short generated document to `annotations/annotation_guidelines.md`. This is
-  **not** `docs/annotation_guidelines.md`, which is the hand-written thesis
-  document.
+  a short generated entity-schema reference to `annotations/schema_reference.md`.
+  This is **not** `docs/annotation_guidelines.md`, which is the hand-written
+  thesis document.
 - `src/ner/mock_data.py` — synthetic notes for the offline plumbing check.
 
 ### Why none of it can be deleted
