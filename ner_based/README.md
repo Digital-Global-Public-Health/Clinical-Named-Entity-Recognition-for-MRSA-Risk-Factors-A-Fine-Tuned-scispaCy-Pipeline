@@ -1,733 +1,512 @@
-# MRSA NLP — NER-Based Pipeline
+# MRSA NER — clinical named entity recognition for MRSA risk factors
 
-**Author:** Akhyar Ahmed
+**Author:** Tobias Rademacher
 
-Fine-tuned neural named entity recognition (NER) for extracting MRSA clinical
-risk signals from AIR.MS clinical notes.  Supports two training tracks:
+A distillation pipeline for extracting MRSA risk-factor signals from AIR·MS
+clinical notes. A local LLM ("teacher") pre-annotates a large silver corpus, a
+fine-tuned scispaCy model ("student") is trained on it, a medspaCy ConText layer
+adds assertion attributes at inference time, and a curated lexicon maps the
+resulting entities onto a binary risk-factor feature matrix.
 
-- **Track A — scispaCy** (`en_core_sci_sm` fine-tuning, CPU-compatible)
-- **Track B — BioClinicalBERT** (HuggingFace token classification, GPU recommended)
+A 16-note hand-annotated gold set measures both the teacher and the student.
 
-Produces the same visit-level binary feature matrix format as the rule-based
-pipeline, enabling direct head-to-head comparison.
+> **Everything runs inside the hospital HPC enclave.** All note text is PHI.
+> Data, models and outputs are gitignored and never leave the enclave. See
+> [Reproducibility](#what-can-and-cannot-be-reproduced) for what an outside
+> reader can and cannot rebuild.
 
----
-Training data format is defined in `../CONTRACT.md`. Treat that contract as the
-source of truth for DocBin structure, entity labels, patient-level splits, and
-sidecar attributes.
+Companion documents:
 
----
-
-## Overview
-
-The NER pipeline replaces hand-crafted regex patterns with a trained sequence
-labelling model that learns contextual entity boundaries from annotated
-clinical text.  It extracts three core entity types — `DISEASE`, `MEDICATION`,
-`PROCEDURE` — applies a window-based negation detector, and aggregates
-entity presence/count signals to visit level.
+- [`docs/inventory.md`](docs/inventory.md) — what every file in this directory is.
+- [`docs/annotation_guidelines.md`](docs/annotation_guidelines.md) — the annotation standard.
+- [`docs/assertion.md`](docs/assertion.md) — the assertion layer's review procedure and limitations.
+- [`../CONTRACT.md`](../CONTRACT.md) — the training-data format contract.
+- [`archive/README.md`](archive/README.md) — one-off scripts already applied.
 
 ---
 
-## Dataflow
+## What the pipeline does
 
 ```
-mrsa_risk_predictions/
-  data/interim/airms/
-    mrsa_visit_cohort.parquet          ← shared cohort source (read-only)
-          │
-          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 1 · Cohort Builder  (src/cohort/cohort_builder.py)        │
-│                                                                 │
-│  · Load PERSON_ID + LABEL from mrsa_visit_cohort.parquet        │
-│  · Query CDMPHI.PERSON → resolve MRNs                          │
-│  · Save  data/interim/airms/mrsa_cohort_person_list.parquet     │
-│  · Mine CDMPHI.NOTES in batches of 500 persons (resume-safe)    │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-          data/interim/airms/notes/
-            chunk_0000.parquet  …
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 2 · NER Preprocessor  (src/preprocessing/note_preprocessor.py) │
-│                                                                 │
-│  · Normalise whitespace (lowercase=False for BERT)              │
-│  · Expand clinical abbreviations                                │
-│  · Filter by note length                                        │
-│  · window_long_note(): split notes > max_tokens into            │
-│    overlapping 512-token windows for BERT inference             │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-          data/interim/airms/notes_preprocessed/
-            chunk_0000.parquet  …
-                         │
-          ┌──────────────┤
-          │              │
-          ▼              ▼
-   [annotated sample] [full notes]
-          │
-          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 3 · Annotation Preparation  (src/ner/annotation_schema.py) │
-│                                                                 │
-│  · Export Markdown annotation guidelines                        │
-│  · Export schema.json for Label Studio / Prodigy               │
-│  · Human annotators label 50–100 notes with:                    │
-│      DISEASE / MEDICATION / PROCEDURE (/ SEVERITY optional)     │
-│  → annotations/train.spacy  val.spacy  test.spacy               │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 4 · NER Model Training  (src/ner/model_trainer.py)        │
-│                                                                 │
-│  Track A — scispaCy fine-tuning                                 │
-│    Base model : en_core_sci_sm  (scispaCy v0.5.4)               │
-│    Framework  : spaCy 3.7                                       │
-│    Training   : spaCy update loop + minibatch                   │
-│    Evaluation : spaCy nlp.evaluate() → ents_f / ents_p / ents_r │
-│    Device     : CPU                                             │
-│    ~30 min on 100 annotated notes                               │
-│                                                                 │
-│  Track B — BioClinicalBERT fine-tuning                          │
-│    Base model : emilyalsentzer/Bio_ClinicalBERT                 │
-│    Framework  : HuggingFace Transformers 4.35+                  │
-│    Task head  : AutoModelForTokenClassification (BIO tagging)   │
-│    Evaluation : seqeval classification_report                   │
-│    Device     : GPU (Minerva HPC recommended)                   │
-│    ~2–4 h on 100 notes (A100 GPU)                               │
-│                                                                 │
-│  Both tracks:                                                   │
-│    · Early stopping (patience=10)                               │
-│    · Best checkpoint saved by validation F1                     │
-│    · Training curves PNG + metrics.json                         │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-          models/airms_ner_v1.0/
-            meta.json  (spaCy) or config.json (HF)
-            model artifacts …
-          outputs/train_spacy_YYYYMMDD-HHMMSS/
-            training_curves.png
-            metrics.json
-            test_metrics.json
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 5 · NER Extractor  (src/ner/ner_extractor.py)             │
-│                                                                 │
-│  · Load trained model from models/airms_ner_v1.0/               │
-│  · For each note:                                               │
-│      extract_entities_spacy()  or  extract_entities_hf()        │
-│      detect_negation()  (5-token window NegEx)                  │
-│      entities_to_features():                                    │
-│        has_{DISEASE}  count_{DISEASE}  has_{DISEASE}_negated    │
-│        has_{MEDICATION}  count_{MEDICATION}  …                  │
-│        has_{PROCEDURE}  count_{PROCEDURE}  …                    │
-│  · Resume-safe chunk processing                                 │
-│  · Optional: save raw entity span text (--save-spans)           │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-          data/interim/airms/ner_extractions/
-            chunk_0000.parquet   (NOTE_ID | PERSON_ID | VISIT_OCCURRENCE_ID
-            …                     | has_DISEASE | count_DISEASE |
-                                   has_DISEASE_negated | …)
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 6 · NER Feature Aggregator  (src/features/feature_aggregator.py) │
-│                                                                 │
-│  · Aggregate per-note → visit level                             │
-│      has_*          : MAX                                       │
-│      count_*        : SUM                                       │
-│      has_*_negated  : MAX                                       │
-│  · Left-join with mrsa_cohort_person_list (adds LABEL + MRN)    │
-│  · Log final case / control counts for verification             │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-          outputs/ner_feature_aggregation_YYYYMMDD-HHMMSS/
-            ner_features_<timestamp>.csv
-            ner_features_<timestamp>.parquet
-            ner_feature_summary_<timestamp>.json
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 7 · Evaluator  (src/evaluation/evaluator.py)              │
-│                                                                 │
-│  · NER feature prevalence by LABEL (cases vs controls)          │
-│  · If test annotations provided (test.spacy / test.csv):        │
-│      seqeval span-level P / R / F1 per entity type              │
-│      overall micro-averaged metrics                             │
-│  · If rule features provided:                                   │
-│      NER-vs-rules agreement analysis per feature                │
-│      (both positive / NER-only / rules-only / neither)          │
-│  · Validation report: pass/fail vs target F1 ≥ 0.70            │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-          outputs/ner_evaluation_YYYYMMDD-HHMMSS/
-            evaluation/
-              ner_metrics_by_entity.png
-              feature_prevalence.png
-              ner_vs_rules_comparison.png  (if rule features given)
-              label_distribution.png
-              ner_metrics_by_entity.csv
-              ner_vs_rules_comparison.csv
-              validation_report.txt
+cohort notes (parquet, enclave)
+        │
+        ▼  src/cli.py preannotate
+llama teacher proposes entity strings; every string is verified against the
+source text before offsets are written                    → verified/*.json
+        │
+        ├──▶ WebAnno TSV3 ──▶ INCEpTION ──▶ human gold set (16 notes)
+        │                                          │
+        ▼                                          ▼  inception_to_docbin.py
+   build_splits.py                              gold.spacy
+   patient-level 70/15/15                          │
+        │                                          │
+        ▼  scripts/train_ner.sh                    │
+   scispaCy student models                         │
+   models/ner_{2000,5000,10000,full}               │
+        │                                          │
+        ├──────────────────────────────────────────┤
+        │                                          ▼
+        │                          eval_gold.py / eval_teacher.py
+        ▼  src/ner/assertion.py + allergy.py
+   medspaCy ConText: negated / historical / hypothetical / uncertain /
+   family / allergy                              → score_assertions.py
+        │
+        ▼  build_feature_matrix.py + lexicon.yaml
+   note-level counts → visit- or patient-level binary feature matrix
 ```
+
+Three entity labels are in scope: `DISEASE`, `MEDICATION`, `PROCEDURE`. Gold
+annotation is spans and labels only; assertion attributes are applied after NER
+at inference time, never baked into `doc.ents`. `../CONTRACT.md` is the
+authority on this.
 
 ---
 
-## LLM Pre-Annotation Drafts
+## Stages
 
-The pre-annotation stage proposes spans with a local Ollama model, verifies
-every proposed string against the source note text, and writes real character
-offsets. These are first-draft annotations for human review in INCEpTION, not
-gold labels.
+Run everything from `ner_based/`.
 
-Offline WSL smoke test with synthetic notes and canned responses:
+### 0 — Corpus extraction
 
 ```bash
-python -m src.cli preannotate \
-  --synthetic-fixtures \
-  --out-dir annotations/preannotations/synthetic \
-  --overwrite
+python extract_cohort_all.py
 ```
 
-Single-patient Minerva run:
+Reads the shared rule-based cohort (`cohort_notes.parquet`, `cohort_subset.csv`)
+and writes one parquet of every note for every cohort patient. Paths are
+hardcoded to the enclave; the script prints the note total and a breakdown by
+`NOTE_TITLE`. The 50-patient cohort yields ~20,951 notes.
 
-**PHI reminder:** `/sc/arion/work/rademt02/airms_notes/extracted/` holds
-extracted clinical note text; do not share it, and purge it when done.
+Single-patient extraction, used for pre-annotation smoke tests, goes through the
+CLI instead:
 
 ```bash
-export PERSON_ID="<PERSON_ID>"
-EXTRACTED_NOTES="/sc/arion/work/rademt02/airms_notes/extracted/extracted_patient_notes.parquet"
-PREANNOTATION_DIR="/sc/arion/work/rademt02/airms_notes/preannotations/person_${PERSON_ID}"
-
 python -m src.cli extract-patient \
-  --notes-parquet /sc/arion/projects/MRSA-HPI-MS/airms-app-host-and-hospital-adaptation-of-mrsa/mrsa_nlp/rule_based/data/interim/airms/notes/all/cohort_notes.parquet \
-  --cohort-csv /sc/arion/projects/MRSA-HPI-MS/airms-app-host-and-hospital-adaptation-of-mrsa/mrsa_nlp/rule_based/data/interim/airms/cohort_subset.csv \
-  --person-id "$PERSON_ID" \
-  --output "$EXTRACTED_NOTES"
-
-python -m src.cli preannotate \
-  --input-path "$EXTRACTED_NOTES" \
-  --out-dir "$PREANNOTATION_DIR" \
-  --model "$OLLAMA_MODEL"
+    --notes-parquet <cohort_notes.parquet> \
+    --cohort-csv    <cohort_subset.csv> \
+    --person-id     "$PERSON_ID" \
+    --output        "$EXTRACTED_NOTES"
 ```
 
-Real Minerva run, after `.env` contains `OLLAMA_HOST`,
-`OLLAMA_AUTH_USER`, `OLLAMA_AUTH_TOKEN`, and either `OLLAMA_MODEL` or
-`--model` is provided:
+Both call `src/ner/extract_patient.py`, which filters at read time and refuses
+person IDs absent from the cohort CSV.
+
+### 1 — LLM pre-annotation (the teacher)
 
 ```bash
 python -m src.cli preannotate \
-  --input-path data/interim/airms/notes_preprocessed \
-  --out-dir annotations/preannotations/minerva \
-  --model "$OLLAMA_MODEL"
+    --input-path <notes parquet or dir> \
+    --out-dir    annotations/<batch>/ \
+    --model      "$OLLAMA_MODEL"
 ```
 
-Primary artifacts are written under `verified/` as one JSON file per note.
-Derived review/training exports are written under `inception_webanno_tsv3/`
-and `contract_docbin/`.
+`src/ner/preannotate.py` asks a local Ollama model for candidate entity strings
+and treats the response strictly as proposals. **The source text is
+authoritative:** every accepted span is located in the note by exact match, or
+by whitespace-normalised match, with word-boundary guards so `MI` does not match
+inside `MIRALAX`. Anything that cannot be located is rejected and recorded with
+a reason (`not_in_text` vs `no_boundary_match`, which distinguishes a
+hallucination from a substring collision).
+
+Requires `OLLAMA_HOST`, `OLLAMA_AUTH_USER`, `OLLAMA_AUTH_TOKEN` and either
+`OLLAMA_MODEL` or `--model` in the environment or a `.env` file.
+`PREANNOTATE_WORKERS` sets thread count (default 1). The run is resume-safe: a
+note with an existing artifact is skipped unless `--overwrite` is given, and a
+failed request writes no artifact at all, so the next run retries it.
+
+Writes, per note, to `<out-dir>/verified/<note_id>.json`: the note text, the
+accepted spans with character offsets, the rejected proposals with reasons, and
+per-note verification counters. Plus `run_summary.json` for the batch.
+
+Two derived exports are written by `src/ner/preannotation_serializers.py` in the
+same command:
+
+- `inception_webanno_tsv3/` — one WebAnno TSV 3.3 file per note, on the built-in
+  DKPro `NamedEntity` layer, for import into INCEpTION.
+- `contract_docbin/` — a `CONTRACT.md`-shaped DocBin plus an empty reserved
+  attribute sidecar, and `alignment_failures.jsonl` for spans spaCy could not
+  align.
+
+Offline check, no Ollama server and no PHI:
+
+```bash
+python -m src.cli preannotate --synthetic-fixtures \
+    --out-dir annotations/preannotations/synthetic --overwrite
+```
+
+### 2 — Human annotation in INCEpTION
+
+```bash
+python import_preannotations.py \
+    --base-url <local INCEpTION> --user <u> --password <p> \
+    --project-id <n> --tsv-dir <batch>/inception_webanno_tsv3
+```
+
+Pushes the TSVs through INCEpTION's AERO remote API. **Run on a compute node
+against the local server** so no note text leaves the enclave.
+
+For the assertion gold pass, the spans must first be moved off the built-in
+`NamedEntity` layer, which INCEpTION does not allow features to be added to:
+
+```bash
+python rewrite_tsv_layer.py --in-dir gold_tsv --out-dir gold_tsv_assert
+```
+
+`rewrite_tsv_layer.py` re-types them onto `webanno.custom.Assertion` with five
+features (`polarity`, `certainty`, `temporality`, `experiencer`, `allergy`) and
+bakes in the default values, so the annotator only touches exceptions.
+
+Annotation follows `docs/annotation_guidelines.md`.
+
+### 3 — Gold set to DocBin
+
+```bash
+python inception_to_docbin.py \
+    --zip      <export>.zip \
+    --out      annotations/gold_export/gold.spacy \
+    --spans-csv annotations/gold_export/gold_spans.csv
+```
+
+Reads the INCEpTION export zip directly, so nothing is unpacked into the repo.
+Tokenises with `en_core_sci_sm` so the gold DocBin aligns with the trained
+models. Documents with zero annotations are skipped by default — in a partly
+annotated project those are notes that were opened but never worked on, and
+including them would destroy the recall figures.
+
+The assertion-attribute export is parsed separately by `project6_to_spans.py`,
+which writes a span CSV carrying all five attribute columns.
+
+### 4 — Silver corpus splits
+
+```bash
+python build_splits.py \
+    --ann-dirs annotations/batch01_v2 annotations/batch02 annotations/batch03 \
+    --parquet  <cohort_all_notes.parquet> \
+    --out-dir  splits
+```
+
+Rebuilds DocBins from the verified JSONs rather than merging per-batch DocBins,
+so filtering decisions are explicit and identical across splits. Requirements,
+in the order the script enforces them:
+
+1. **Hard** — patient integrity: no patient's notes straddle a split.
+2. **Optimised** — 70/15/15 by note count, greedy longest-patient-first.
+3. **Tie-break** — case/control balance.
+4. **Asserted** — all four note types present in every split; the script exits
+   non-zero if not.
+5. **Fixed** — seed 7, deterministic; no searching for a lucky partition.
+
+Writes `train.spacy`, `dev.spacy`, `test.spacy`, nested learning-curve subsets
+`train_{2000,5000,10000}.spacy`, `manifest.csv` (the join key for everything),
+`gold_candidates.csv`, and `split_report.md`.
+
+The committed [`splits/split_report.md`](splits/split_report.md) records the
+actual run: 18,669 notes ≥ 200 chars across 50 patients, 571,455 silver
+entities, 70.0 / 15.0 / 15.0.
+
+`manifest.csv` and `gold_candidates.csv` carry `PERSON_ID` and `NOTE_ID` and
+stay on the enclave. `split_report.md` is aggregate counts only and is committed.
+
+### 5 — Training the student
+
+```bash
+bash scripts/train_ner.sh {2000|5000|10000|full} [GPU_ID]
+```
+
+Runs `spacy debug config`, `spacy debug data`, then `spacy train` with
+`configs/ner_sci.cfg` and `--code configs/custom_code.py`, writing to
+`models/ner_<size>/`. GPU ID defaults to `-1` (CPU).
+
+Two things in the config matter:
+
+- **`components.tok2vec` is sourced from `en_core_sci_sm` and is deliberately
+  *not* frozen**, so the pretrained feature extractor adapts to the corpus. The
+  NER head is fresh, because the base model's generic `ENTITY` head is
+  incompatible with the `DISEASE`/`MEDICATION`/`PROCEDURE` label set.
+- **`configs/custom_code.py` registers `airms.scispacy_tokenizer.v1`**, an
+  after-creation callback that installs scispaCy's tokenizer. `spacy train`
+  otherwise builds a plain English tokenizer, and the mismatch does not raise —
+  it silently degrades training, because entity boundaries falling inside a
+  token cannot be learned. In `spacy debug data`, misaligned entity spans should
+  be near zero; a large count means the callback did not fire, and you should
+  not train until it does.
+
+The same registration is why `src/ner/assertion.py` imports `custom_code.py` for
+its side effects before any `spacy.load` — a plain load fails with
+`RegistryError [E893]`.
+
+Training params (in `configs/ner_sci.cfg`): dropout 0.1, patience 3500,
+max_steps 60000, eval every 500, seed 7, Adam at 1e-3.
+
+`DEV_DATA` defaults to `splits/dev_500.spacy` and is overridable by environment
+variable. See [Reproducibility](#what-can-and-cannot-be-reproduced) — this file
+cannot be regenerated.
+
+### 6 — Evaluation
+
+```bash
+python eval_gold.py    --gold <gold.spacy> --models models/ner_* --split
+python eval_teacher.py --gold <gold.spacy>
+```
+
+Both report exact-match and partial-overlap precision/recall/F1 per label and
+overall. Partial matching is a deterministic greedy one-to-one assignment,
+sorted longest-span-first, because boundary disagreement and missed entities are
+different failure modes.
+
+`--split` reports **pilot** (6 notes, annotated with INCEpTION recommenders
+active) and **extension** (10 notes, no machine assistance) separately. Those
+two halves are not methodologically identical, and a large gap between them is a
+confound rather than a finding.
+
+`eval_teacher.py` measures the ceiling: the student can only learn what the
+teacher proposed, so if teacher recall against gold is low, no amount of silver
+data fixes it.
+
+Results as of 2026-08-30 are captured verbatim in
+[`docs/eval_2026-08-30_models.txt`](docs/eval_2026-08-30_models.txt) and
+[`docs/eval_2026-08-30_teacher.txt`](docs/eval_2026-08-30_teacher.txt). Gold set:
+16 documents, 1,647 entities.
+
+### 7 — The assertion layer
+
+`src/ner/assertion.py` loads a trained model and appends medspaCy ConText.
+`build_assertion_pipeline()` is the single entry point used by every downstream
+consumer.
+
+Structure of the pipeline it builds, and why:
+
+- **PyRuSH is inserted after NER**, not before. The trained models contain no
+  parser or sentence segmenter, and ConText needs sentence boundaries; inserting
+  a component before NER would risk perturbing the entity predictions the model
+  was evaluated on. PyRuSH rather than spaCy's punctuation `sentencizer`,
+  because problem lists and headers have no terminal punctuation and a whole
+  section would otherwise collapse into one sentence.
+- **The sectionizer is capped at `max_section_length=120`** and its section
+  category is descriptive only. The AIR·MS export has no line breaks, so a
+  section runs to the next *matched* header; capping bounds the leak without
+  discarding the signal that disabling section attributes entirely would cost.
+- **`src/ner/allergy.py` runs last**, setting `ent._.is_allergy` from two
+  mechanisms: header regions (which ConText cannot reach, being
+  sentence-bounded) and inline cues (which are ConText's job). A drug in an
+  allergy list is a drug the patient did *not* receive.
+- Two packaged medspaCy rules are constrained in place — `prophylaxis` is
+  restricted to DISEASE targets and `: no` is capped at `max_scope=5`. See
+  `PACKAGED_RULE_FIXES` and `archive/patch_assertion_packaged_rules.py`.
+
+Scoring against the gold attributes, with gold spans injected directly as
+`doc.ents` so the assertion components are measured in isolation from NER
+recall:
+
+```bash
+python score_assertions.py --export <unzipped export dir> \
+    --model models/ner_full/model-best --errors-csv <out.csv>
+```
+
+Review tooling is documented in [`docs/assertion.md`](docs/assertion.md).
+
+### 8 — Feature matrix
+
+```bash
+# note-level counts (runs inference; slow)
+python build_feature_matrix.py --out outputs/feature_matrix_note.csv
+
+# roll up without re-running inference
+python build_feature_matrix.py --from-counts outputs/feature_matrix_note.csv \
+    --level visit --out outputs/feature_matrix_visit.csv
+```
+
+Runs the assertion pipeline over the corpus, gates every entity, matches
+survivors against `lexicon.yaml`, and emits counts at note level.
+
+**Four axes gate.** An entity failing any of them is not evidence the thing
+occurred: `is_negated`, `is_family`, `is_hypothetical`, `is_allergy`.
+
+**Two axes deliberately do not gate.** `is_uncertain` is not a gate — "possible
+pneumonia" is weak evidence, but it is evidence, and these features are sparse;
+uncertain mentions are counted separately so the sensitivity can be reported.
+`is_historical` is not a gate either, because temporality scores 60.7 F1 and
+gating on it would silently zero out most true positives; instead each feature
+carries a companion count of historical mentions, from which an `_all_hist` flag
+is derived. Report it, do not enforce it.
+
+The intermediate CSV stores four counts per feature (total, historical,
+uncertain, dropped) rather than booleans, because counts roll up by summation to
+any level and booleans do not. `--level` derives the binary view.
+
+**On counts:** documentation volume differs sharply between label groups in this
+cohort (cases ~13 notes/visit, controls ~2.7), so raw counts partly measure how
+much was written. Prefer the binary features, or normalise.
+
+The lexicon curation loop that produced `lexicon.yaml`:
+
+```bash
+python review_lexicon.py --report coverage
+python review_lexicon.py --report terms --feature dialysis_access
+python review_lexicon.py --report unmapped --top 60
+```
+
+The corpus decides the vocabulary, not memory — it contains surface forms nobody
+predicts (`av fistula` 274, `avf` 211, `foley` 608) and traps that only show up
+in review (bare `graft` matched 400 occurrences of coronary graft and
+graft-versus-host disease).
 
 ---
 
-## Project Structure
+## What can and cannot be reproduced
 
-```
-ner_based/
-├── env/
-│   └── environment.yml          # conda env: mrsa-nlp-ner (Python 3.10)
-├── annotations/                 # training data (human-annotated)
-│   ├── train.spacy              # spaCy DocBin format (or train.csv)
-│   ├── val.spacy
-│   ├── test.spacy
-│   └── annotation_guidelines.md # generated by prepare-annotations
-├── models/
-│   └── airms_ner_v1.0/          # saved model (Track A: spaCy, Track B: HF)
-├── scripts/
-│   ├── start_airms_tunnel.sh
-│   ├── run_cohort_builder.sh
-│   ├── run_preprocessing.sh
-│   ├── run_training.sh          # supports --track spacy|hf
-│   ├── run_feature_extraction.sh
-│   └── run_evaluation.sh
-├── src/
-│   ├── cli.py                   # Typer CLI — 8 commands
-│   ├── utils_logging.py
-│   ├── utils_db.py
-│   ├── utils_io.py
-│   ├── cohort/
-│   │   └── cohort_builder.py
-│   ├── preprocessing/
-│   │   └── note_preprocessor.py # NERPreprocessorConfig + NERNotePreprocessor
-│   ├── ner/
-│   │   ├── annotation_schema.py # entity type definitions + guideline export
-│   │   ├── model_trainer.py     # NERTrainerConfig + NERModelTrainer
-│   │   └── ner_extractor.py     # NERExtractorConfig + EntitySpan + NERExtractor
-│   ├── features/
-│   │   └── feature_aggregator.py
-│   └── evaluation/
-│       └── evaluator.py
-├── data/
-│   └── interim/airms/
-│       ├── notes/
-│       ├── notes_preprocessed/
-│       └── ner_extractions/
-├── outputs/
-├── .env.example
-└── .gitignore
-```
+### Cannot be reproduced outside the enclave
 
----
+Everything below is PHI or derived from it, is gitignored, and stays on the
+enclave. An outside reader can read the code and the aggregate reports, not
+rebuild the results.
 
-## Models
-
-### Track A — scispaCy (`en_core_sci_sm`)
-
-| Property | Value |
+| Artefact | Why |
 |---|---|
-| Model | `en_core_sci_sm` v0.5.4 |
-| Publisher | Allen Institute for AI (AllenAI) |
-| Base | spaCy `en_core_web_sm` + biomedical NER pre-training |
-| Vocabulary | ~360k biomedical tokens |
-| Training data | MedMentions + BC5CDR |
-| Fine-tuned on | 50–100 annotated AIR.MS notes |
-| Framework | spaCy 3.7 |
-| Device | CPU |
-| Install | `pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz` |
+| `cohort_all_notes.parquet` and all note text | PHI. The source cohort lives in the AIR·MS HANA warehouse behind an SSH tunnel. |
+| `annotations/*/verified/*.json` | Contain full note text. |
+| `annotations/gold_export/gold.spacy`, `gold_spans.csv` | Contain note text. |
+| `splits/*.spacy`, `splits/manifest.csv`, `gold_candidates.csv` | Note text and patient identifiers. |
+| `models/ner_*` | Trained on PHI; large binaries. |
+| `outputs/`, feature matrices | Contain note and patient identifiers. |
+| The Ollama teacher endpoint | Enclave-internal, token-authenticated. |
+| The INCEpTION server | Enclave-internal. |
 
-**When to use:** fast iteration, no GPU, smaller annotated sets.
+### Cannot be reproduced even inside the enclave
 
-### Track B — BioClinicalBERT
+- **`splits/dev_500.spacy`.** All four training runs used it —
+  `--paths.dev splits/dev_500.spacy` appears in every training log. It is a
+  random 500-document subset of `dev.spacy` created on 13 August by a command
+  that was not saved, and seeds 0, 7 and 42 under `numpy` and `random` do not
+  reproduce it. The file is retained on the enclave. Treat it as a fixed
+  artefact of the experiment, not as a regenerable intermediate: re-drawing a
+  different 500 documents would make the four model results incomparable with
+  the reported ones.
 
-| Property | Value |
-|---|---|
-| Model | `emilyalsentzer/Bio_ClinicalBERT` |
-| Publisher | Emily Alsentzer, Harvard / MIT |
-| Base | `bert-base-uncased` → BioBERT → MIMIC-III notes fine-tuning |
-| Training data | All MIMIC-III clinical notes |
-| Fine-tuned on | 50–100 annotated AIR.MS notes (BIO token classification) |
-| BIO scheme | `B-DISEASE`, `I-DISEASE`, `B-MEDICATION`, `I-MEDICATION`, `B-PROCEDURE`, `I-PROCEDURE`, `O` |
-| Evaluation | seqeval (span-level, strict matching) |
-| Framework | HuggingFace Transformers 4.35+ |
-| Device | GPU (NVIDIA A100 on Minerva recommended) |
-| HF Hub | `emilyalsentzer/Bio_ClinicalBERT` |
+### Can be reproduced from this repository alone
 
-**When to use:** maximum accuracy, GPU available, final production model.
-
-### Alternative HF models (swap via `--base-model`)
-
-| Model | Notes |
-|---|---|
-| `allenai/biomed_roberta_base` | RoBERTa pre-trained on PubMed + PMC |
-| `microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract` | PubMed abstract pre-training |
-| `d4data/biomedical-ner-all` | NER fine-tuned on multiple biomedical corpora |
-| `en_core_sci_lg` | scispaCy large model (better accuracy, more RAM) |
+- The full pipeline logic, every rule, and every threshold.
+- `docs/annotation_guidelines.md` — the annotation standard.
+- `lexicon.yaml` — 48 features with per-feature provenance notes.
+- `configs/ner_sci.cfg` — the exact training configuration.
+- `splits/split_report.md` — aggregate split counts, seed, tokenizer.
+- `docs/eval_2026-08-30_*.txt` — the reported evaluation numbers.
+- The offline smoke test: `python -m src.cli preannotate --synthetic-fixtures`
+  and `python -m src.cli mock-e2e`, both of which use synthetic notes and touch
+  no real data source.
+- `pytest tests/` — covers span verification, the serializers, and patient
+  extraction.
 
 ---
 
-## Setup
+## Environment
 
-### 1 — Create the conda environment
+`requirements.txt` pins only `medspacy==1.3.1`. There is no complete environment
+specification in the repository; the following are what the code requires and
+what the artefacts were produced with.
 
-```bash
-cd mrsa_nlp/ner_based
-conda env create -f env/environment.yml
-conda activate mrsa-nlp-ner
-```
-
-> **GPU note (Track B):** if running on Minerva, load the CUDA module first:
-> ```bash
-> module load cuda/11.8
-> conda env create -f env/environment.yml
-> ```
-
-### 2 — Configure credentials
-
-```bash
-cp .env.example .env
-# Edit .env — fill AIRMS_USER, AIRMS_PASSWORD, AIRMS_PORT
-```
-
-### 3 — Database connection (automatic via HPC login node)
-
-The SSH tunnel to AIR.MS is established **automatically** through the HPC login node.
-
-No separate setup needed — just run:
-
-```bash
-bash scripts/run_cohort_builder.sh
-```
-
-The script will:
-1. Prompt for your HANA password
-2. Find a free local port (50000–51000 range)
-3. Establish SSH tunnel: `localhost:PORT → li04e02 → db.airms.mssm.edu:30041`
-4. Set all connection environment variables
-5. Run cohort builder
-6. Clean up tunnel automatically on exit
-
-**Why this approach:**
-- ✓ Works from local machines (via HPC login node)
-- ✓ No need for separate terminal running tunnel
-- ✓ Automatic port discovery avoids conflicts
-- ✓ SSH stability flags (`ServerAliveInterval=60`, `ExitOnForwardFailure`)
-
----
-
-## Running the Pipeline
-
-### Complete walkthrough (Track A — scispaCy)
-
-```bash
-conda activate mrsa-nlp-ner
-cd mrsa_nlp/ner_based
-
-# 1. Build cohort + mine notes (requires tunnel)
-bash scripts/run_cohort_builder.sh
-
-# 2. Preprocess
-bash scripts/run_preprocessing.sh
-
-# 3. Export annotation guidelines, then annotate notes externally
-python -m src.cli prepare-annotations \
-    --entity-types "DISEASE,MEDICATION,PROCEDURE" \
-    --guidelines-out annotations/annotation_guidelines.md \
-    --schema-json-out annotations/schema.json
-#  → open annotations/ in Label Studio or Prodigy
-#  → export annotated data as train.spacy / val.spacy / test.spacy
-
-# 4. Train (Track A, CPU)
-bash scripts/run_training.sh --track spacy
-
-# 5. Run NER extraction + aggregate features
-bash scripts/run_feature_extraction.sh --track spacy
-
-# 6. Evaluate
-bash scripts/run_evaluation.sh \
-    outputs/ner_feature_aggregation_<timestamp>/ner_features_<timestamp>.csv \
-    --test-annotations annotations/test.spacy
-```
-
-### Track B — BioClinicalBERT (GPU)
-
-```bash
-# Steps 1–3 same as above, then:
-
-# 4. Train on GPU
-bash scripts/run_training.sh --track hf
-
-# 5. Extract + aggregate
-bash scripts/run_feature_extraction.sh --track hf
-
-# 6. Evaluate + compare with rule-based features
-bash scripts/run_evaluation.sh \
-    outputs/ner_feature_aggregation_<timestamp>/ner_features_<timestamp>.csv \
-    --test-annotations annotations/test.spacy \
-    --rule-features    ../../rule_based/outputs/feature_aggregation_<timestamp>/rule_features_<timestamp>.csv
-```
-
-### Debug mode (no GPU, 20 persons)
-
-```bash
-bash scripts/run_cohort_builder.sh --debug
-bash scripts/run_preprocessing.sh --debug
-bash scripts/run_training.sh --track spacy --debug
-bash scripts/run_feature_extraction.sh --debug
-```
-
----
-
-## CLI Reference
-
-```
-python -m src.cli --help
-```
-
-```
- Usage: python -m src.cli [OPTIONS] COMMAND [ARGS]...
-
- MRSA NLP — NER-based clinical note extraction and model training pipeline.
-
-Options:
-  --log-level TEXT  Logging level: DEBUG | INFO | WARNING | ERROR  [default: INFO]
-  --help            Show this message and exit.
-
-Commands:
-  build-cohort         Load MRSA cohort and mine notes from CDMPHI.NOTES
-  preprocess           Clean and normalise raw note chunks for NER
-  prepare-annotations  Export annotation schema and guidelines
-  extract-patient      Extract one patient's notes for NER pre-annotation
-  preannotate          Ask Ollama for NER pre-annotations and verify spans
-  train                Train or fine-tune a NER model
-  extract              Run NER inference on preprocessed note chunks
-  aggregate-features   Aggregate NER extractions to visit-level matrix
-  evaluate             Evaluate NER quality and generate reports
-  run-pipeline         Run the complete pipeline end-to-end
-```
-
-### `build-cohort`
-
-```bash
-python -m src.cli build-cohort \
-    --schema CDMPHI \
-    --chunk-size 500 \
-    --min-note-date 2014-07-14 \
-    --no-debug
-```
-
-### `preprocess`
-
-```bash
-# Track A (spaCy) — no windowing needed
-python -m src.cli preprocess \
-    --raw-notes-dir data/interim/airms/notes \
-    --out-dir       data/interim/airms/notes_preprocessed \
-    --max-tokens 0 \
-    --expand-abbrev \
-    --no-debug
-
-# Track B (BERT) — window notes to 512 tokens
-python -m src.cli preprocess \
-    --raw-notes-dir data/interim/airms/notes \
-    --out-dir       data/interim/airms/notes_preprocessed \
-    --max-tokens 512 \
-    --expand-abbrev
-```
-
-### `prepare-annotations`
-
-```bash
-# Core 3 entity types
-python -m src.cli prepare-annotations \
-    --entity-types "DISEASE,MEDICATION,PROCEDURE" \
-    --guidelines-out annotations/annotation_guidelines.md
-
-# Include optional SEVERITY type
-python -m src.cli prepare-annotations \
-    --entity-types "DISEASE,MEDICATION,PROCEDURE" \
-    --include-severity \
-    --guidelines-out  annotations/annotation_guidelines.md \
-    --schema-json-out annotations/schema.json
-```
-
-### `train`
-
-```bash
-# Track A — scispaCy fine-tuning (CPU)
-python -m src.cli train \
-    --track       spacy \
-    --base-model  en_core_sci_sm \
-    --train-data  annotations/train.spacy \
-    --val-data    annotations/val.spacy \
-    --test-data   annotations/test.spacy \
-    --model-out-dir models/airms_ner_v1.0 \
-    --n-epochs    30 \
-    --batch-size  16 \
-    --dropout     0.3 \
-    --device      cpu \
-    --seed        42
-
-# Track B — BioClinicalBERT (GPU)
-python -m src.cli train \
-    --track       hf \
-    --base-model  emilyalsentzer/Bio_ClinicalBERT \
-    --train-data  annotations/train.spacy \
-    --val-data    annotations/val.spacy \
-    --test-data   annotations/test.spacy \
-    --model-out-dir models/airms_ner_v1.0 \
-    --n-epochs    10 \
-    --batch-size  8 \
-    --learning-rate 5e-5 \
-    --device      cuda:0
-```
-
-| Option | Track A default | Track B default |
+| Component | Value | Evidenced by |
 |---|---|---|
-| `--n-epochs` | 30 | 10 |
-| `--batch-size` | 16 | 8 |
-| `--learning-rate` | `1e-3` | `5e-5` |
-| `--device` | `cpu` | `cuda:0` |
+| spaCy | 3.x, config schema v3 | `configs/ner_sci.cfg` |
+| Base model | `en_core_sci_sm` (scispaCy) | `configs/custom_code.py`, `build_splits.py`, `inception_to_docbin.py` |
+| Assertion | `medspacy==1.3.1`, ConText + PyRuSH + sectionizer | `requirements.txt`, `src/ner/assertion.py` |
+| Teacher | a local Ollama chat model | `src/ner/preannotate.py` |
+| Others | `pandas`, `numpy`, `pyyaml`, `typer`, `rich`, `loguru`, `requests`, `python-dotenv` | imports across `src/` and the root scripts |
 
-### `extract`
-
-```bash
-python -m src.cli extract \
-    --preprocessed-dir data/interim/airms/notes_preprocessed \
-    --out-dir          data/interim/airms/ner_extractions \
-    --model-path       models/airms_ner_v1.0 \
-    --model-track      spacy \
-    --batch-size       32 \
-    --negation-window  5 \
-    --no-debug
-```
-
-### `aggregate-features`
+Verify the tok2vec width before training in a new environment:
 
 ```bash
-python -m src.cli aggregate-features \
-    --extractions-dir data/interim/airms/ner_extractions \
-    --cohort-path     data/interim/airms/mrsa_cohort_person_list.parquet \
-    --level           visit \
-    --include-negated \
-    --include-counts
+python -c "import spacy; print(spacy.load('en_core_sci_sm').config['components']['tok2vec']['model']['encode']['width'])"
 ```
 
-### `evaluate`
-
-```bash
-# Prevalence + entity metrics + NER-vs-rules comparison
-python -m src.cli evaluate \
-    outputs/ner_feature_aggregation_20250401-150000/ner_features_20250401-150000.csv \
-    --test-annotations annotations/test.spacy \
-    --rule-features-path ../../rule_based/outputs/feature_aggregation_<ts>/rule_features_<ts>.csv \
-    --target-f1 0.70
-```
+It must match `components.ner.model.tok2vec.width` in `configs/ner_sci.cfg`
+(currently 96).
 
 ---
 
-## Entity Types
+## PHI handling
 
-| Label | Examples | MRSA relevance |
-|---|---|---|
-| `DISEASE` | pneumonia, MRSA, UTI, sepsis, diabetes, CKD, HIV, lymphoma, cellulitis | Comorbidities + prior infections are key risk factors |
-| `MEDICATION` | prednisone, vancomycin, methotrexate, tacrolimus, ciprofloxacin, corticosteroids | Immunosuppressants + prior antibiotics |
-| `PROCEDURE` | central line, PICC, hemodialysis, intubation, surgery, bone marrow transplant | Invasive procedures = primary acquisition routes |
-| `SEVERITY` *(optional)* | immunocompromised, neutropenic, critically ill, debilitated | Cross-cutting immune status modifier |
+`.gitignore` blocks, path-independently: `outputs/`, `annotations/preannotations*/`,
+`logs/`, and every `*.csv`, `*.tsv`, `*.parquet`, `*.spacy` and `*.zip`. Do not
+relax these. Several scripts print an explicit reminder when they write a file
+that contains note text.
 
-**BIO tagging scheme (Track B):**
+Scripts that must run on a compute node inside the enclave, because they read
+note text: `build_feature_matrix.py`, `score_assertions.py`,
+`measure_allergy_sections.py`, `review_lexicon.py`, `rewrite_tsv_layer.py`,
+`import_preannotations.py`, `sample_allergy.py`, `project6_to_spans.py`.
 
-```
-Text:    The patient has  a  central    line   and  is  on  prednisone  .
-BIO:     O   O       O    O  B-PROCEDURE I-PROCEDURE O O  O  B-MEDICATION O
-```
-
----
-
-## Outputs
-
-```
-models/
-  airms_ner_v1.0/               ← final trained model
-
-outputs/
-  train_spacy_20250401-100000/
-    training_curves.png         ← loss + val F1 twin-axis plot
-    metrics.json                ← per-epoch training metrics
-    test_metrics.json           ← final held-out test scores
-    checkpoints/
-      epoch_05/  epoch_10/ …    ← spaCy nlp.to_disk() snapshots
-    run.log
-    config.yaml
-
-  ner_feature_aggregation_20250401-150000/
-    ner_features_<timestamp>.csv
-    ner_features_<timestamp>.parquet
-    ner_feature_summary_<timestamp>.json
-
-  ner_evaluation_20250401-160000/
-    evaluation/
-      ner_metrics_by_entity.png   ← P/R/F1 grouped bar chart by entity type
-      feature_prevalence.png      ← prevalence by LABEL (case vs control)
-      ner_vs_rules_comparison.png ← stacked agreement bars (if rule features given)
-      label_distribution.png
-      ner_metrics_by_entity.csv
-      ner_vs_rules_comparison.csv
-      validation_report.txt       ← pass/fail vs target F1
-    run.log
-    config.yaml
-```
+`scripts/assertion_report.py` and `scripts/assertion_sample.py` refuse to write
+outside `outputs/` and `annotations/`.
 
 ---
 
-## Negation Logic
+## Known gaps
 
-Shared with the rule-based pipeline; applied post-entity-extraction:
+Recorded rather than fixed, because several are facts about how the work was
+actually run.
 
-```
-For each extracted EntitySpan [start, end]:
-  1. Tokenise the window [start - 5 tokens, start]
-  2. Check for negation cue:
-       no · not · without · denies · denied · negative for ·
-       no evidence of · no sign of · ruled out · absent · never …
-  3. If sentence-boundary mode (default True):
-       truncate window at nearest preceding sentence boundary
-  4. Mark EntitySpan.is_negated = True if cue found
+1. **`splits/dev_500.spacy` is not regenerable.** See above. This is the largest
+   reproducibility gap.
+2. **Default model path differs between scripts.** `build_feature_matrix.py`,
+   `score_assertions.py` and `sample_allergy.py` default to
+   `models/ner_full/model-best`; `scripts/assertion_report.py` and
+   `scripts/ablate_context_rules.py` default to `models/ner_10000/model-best`.
+   Pass `--model` explicitly.
+3. **Gold DocBin path is inconsistent.** Most scripts default to
+   `annotations/gold_export/gold.spacy`; the usage examples in `eval_gold.py`
+   and `eval_teacher.py` show `/tmp/gold16.spacy`.
+4. **Teacher model name is inconsistent.** `docs/annotation_guidelines.md` names
+   `llama3.3:70b`; `archive/compare_runs.py` names `llama3.1:70b`;
+   `eval_teacher.py` says only "llama". The actual model came from
+   `$OLLAMA_MODEL` at run time and is not recorded in the repository.
+5. **`docs/assertion.md` says the report writes "four flags"**; it writes five.
+   `is_uncertain` was added later and is missing from that document's attribute
+   list.
+6. **Two files named `annotation_guidelines.md`.** `docs/annotation_guidelines.md`
+   is the hand-written thesis standard. `src/ner/annotation_schema.py`
+   *generates* a different, much shorter one at
+   `annotations/annotation_guidelines.md`. Only the first was used.
+7. **`lexicon.yaml`'s header says 47 features**; it defines 48. Feature 48,
+   `other_indwelling_device`, is corpus-derived rather than literature-derived
+   and its provenance differs from features 1–47 — the file says so in place.
+8. **Scripts with unresolvable inputs.** `which_cue.py` and `which_cue_exp.py`
+   read `/tmp/gold16_txt/`; `archive/check_recommender_overlap.py` reads
+   `/tmp/gold_verify_spans.csv` and a `gold25_backup_*.zip`; `review_lexicon.py`
+   needs `lexicon_candidates.csv`. None of these is produced by anything in the
+   repository; all were enclave-local scratch files.
+9. **`split_docbin.py`** appears superseded by `build_splits.py` — it is a
+   two-way split of a single `contract_docbin` DocBin, keyed on `patient_id`,
+   which only `preannotation_serializers.write_contract_docbin` writes. Kept
+   because that cannot be confirmed from the code alone.
+10. **Duplicated scoring logic.** `eval_gold.py` and `eval_teacher.py` carry
+    identical `prf`/`overlaps`/`score`/`report` blocks; `teacher_vs_gold.py` and
+    `analyse_teacher_misses.py` re-implement `prf` again.
+    `build_feature_matrix.py` and `review_lexicon.py` each implement `__ref__`
+    expansion for the lexicon. Left alone: `eval_gold.py` and `eval_teacher.py`
+    produced committed results and should not be perturbed.
+11. **No test coverage** for the assertion layer or the feature matrix.
 
-Downstream:
-  is_negated=False  → contributes to has_{entity} and count_{entity}
-  is_negated=True   → contributes to has_{entity}_negated only
-```
+## Inherited scaffold
 
----
+`src/cli.py` and the modules beneath it are a Track A / Track B design that
+predates this work. Four of them — `src/cohort/cohort_builder.py`,
+`src/preprocessing/note_preprocessor.py`, `src/features/feature_aggregator.py`,
+`src/evaluation/evaluator.py` — are **specification only**: every method body is
+`pass` beneath a docstring describing intended behaviour. The wrappers that
+drive them (`scripts/run_cohort_builder.sh`, `run_preprocessing.sh`,
+`run_feature_extraction.sh`, `run_evaluation.sh`, `start_airms_tunnel.sh`) run to
+completion and do nothing. `python -m src.cli build-cohort` logs
+`Cohort built: 0 persons` and exits 0. **Do not use them.**
 
-## Key Design Decisions
+`src/ner/model_trainer.py` and `src/ner/ner_extractor.py` are implemented for
+the spaCy track and raise `NotImplementedError("out of thesis scope")` for the
+HuggingFace track. They are superseded by `scripts/train_ner.sh` and
+`build_feature_matrix.py` respectively, and are retained because the `mock-e2e`
+plumbing check uses the trainer.
 
-- **`lowercase=False` in preprocessing** — BERT models are case-sensitive; preserving capitalisation improves entity recognition (e.g. "MRSA" vs "mrsa").
-- **BERT 512-token windowing** — long clinical notes are split into overlapping windows with a configurable stride; entities near window edges are deduplicated.
-- **BIO tagging, not IO** — `B-` prefix distinguishes adjacent same-type entities (e.g. two consecutive disease mentions).
-- **seqeval for evaluation** — span-level strict matching (both boundaries + label must match); reports per-class and micro-averaged P/R/F1.
-- **Same cohort as `mrsa_risk_predictions`** — reads `mrsa_visit_cohort.parquet` directly; same persons, same labels.
-- **Track A first** — recommended starting point: faster iteration, no GPU needed, interpretable failure modes.
-- **Track B for production** — BioClinicalBERT is pre-trained on MIMIC-III, making it domain-adapted to clinical notes similar to AIR.MS.
+None of this can be deleted: `src/cli.py` imports all fourteen `src/` modules at
+module load, and two of its commands — `preannotate` and `extract-patient` — are
+live pipeline stages.
 
----
-
-## Annotation Workflow
-
-```
-1. python -m src.cli prepare-annotations
-   → annotations/annotation_guidelines.md   (human-readable)
-   → annotations/schema.json                (for Label Studio / Prodigy)
-
-2. Sample 50–100 notes from data/interim/airms/notes_preprocessed/
-
-3. Annotate in Label Studio (recommended):
-     label_studio start
-     # Import schema.json as label config
-     # Import note texts as tasks
-     # Export as spaCy format → train.spacy / val.spacy / test.spacy
-
-   Or use Prodigy:
-     prodigy ner.manual airms_ner_train \
-         en_core_sci_sm \
-         path/to/notes.jsonl \
-         --label DISEASE,MEDICATION,PROCEDURE
-
-4. Recommended split: 70% train / 15% val / 15% test
-   Aim for ≥ 200 annotated entity spans per type.
-
-5. Run: python -m src.cli train --track spacy
-```
-
----
-
-## References
-
-### Models
-
-- Neumann M et al. (2019). *ScispaCy: Fast and Robust Models for Biomedical Natural Language Processing.* BioNLP workshop at ACL. — scispaCy base model.
-- Alsentzer E et al. (2019). *Publicly Available Clinical BERT Embeddings.* Clinical NLP workshop at NAACL. — BioClinicalBERT model trained on MIMIC-III.
-- Lee J et al. (2020). *BioBERT: a pre-trained biomedical language representation model.* Bioinformatics. — Biomedical BERT pre-training methodology.
-- Devlin J et al. (2019). *BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.* NAACL. — Original BERT architecture.
-
-### Evaluation
-
-- Ramshaw LA & Marcus MP (1995). *Text chunking using transformation-based learning.* — BIO tagging scheme.
-- Nakayama H (2018). *seqeval: A Python framework for sequence labeling evaluation.* — span-level NER metrics.
-
-### Negation
-
-- Chapman WW et al. (2001). *A simple algorithm for identifying negated findings and diseases in discharge summaries.* Journal of Biomedical Informatics.
-
-### Clinical NLP
-
-- Peng Y et al. (2019). *Transfer learning in biomedical NLP: an evaluation of BERT and ELMo on ten benchmarking datasets.* BioNLP workshop. — Transfer learning evaluation.
-- Soysal E et al. (2018). *CLAMP — a toolkit for efficiently building customized clinical NLP pipelines.* JAMIA.
+`docs/inventory.md` has the file-by-file breakdown.
