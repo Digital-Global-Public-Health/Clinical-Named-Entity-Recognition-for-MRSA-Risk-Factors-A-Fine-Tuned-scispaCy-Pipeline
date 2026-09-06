@@ -466,8 +466,9 @@ actually run.
    `docs/annotation_guidelines.md`, which names it. Note that
    `archive/compare_runs.py` names `llama3.1:70b`: that script belongs to the
    earlier llama-versus-gemma comparison and does not describe the production
-   run. Future runs should snapshot the resolved model name alongside
-   `run_summary.json`.
+   run. The `preannotate` config snapshot now records `model_resolved`
+   alongside `model_requested`, so future runs carry the name; the three
+   existing batches predate that and cannot be back-filled.
 5. **`docs/assertion.md` says the report writes "four flags"**; it writes five.
    `is_uncertain` was added later and is missing from that document's attribute
    list.

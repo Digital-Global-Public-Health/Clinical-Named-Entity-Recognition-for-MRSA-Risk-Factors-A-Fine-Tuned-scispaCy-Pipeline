@@ -401,7 +401,13 @@ def preannotate(
             "pipeline_step": "preannotate",
             "input_path": input_path,
             "out_dir": out_dir,
-            "model": model,
+            # `model` is None whenever the name comes from OLLAMA_MODEL, which
+            # is how the production runs were invoked -- so the silver corpus
+            # has no record of its teacher. Record what the client resolved.
+            # Both keys are kept so a --model that disagrees with the
+            # environment stays visible.
+            "model_requested": model,
+            "model_resolved": client.cfg.model if client is not None else None,
             "synthetic_fixtures": synthetic_fixtures,
             "overwrite": overwrite,
             "write_inception": write_inception,
