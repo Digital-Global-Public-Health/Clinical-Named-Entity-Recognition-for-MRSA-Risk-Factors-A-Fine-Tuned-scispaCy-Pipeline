@@ -462,9 +462,12 @@ run happened, not defects to be fixed.
    run. The `preannotate` config snapshot now records `model_resolved`
    alongside `model_requested`, so future runs carry the name; the three
    existing batches predate that and cannot be back-filled.
-3. **`docs/assertion.md` says the report writes "four flags"**; it writes five.
-   `is_uncertain` was added later and is missing from that document's attribute
-   list.
+3. **`docs/assertion.md` is stale in several respects and is being replaced
+   wholesale**, so it has not been patched. One instance, found while reading
+   the code: it says the report writes "four flags" and omits `is_uncertain`
+   from its attribute list, though `scripts/assertion_report.py` has written
+   five since `0daa226`. Do not treat that document as current until the
+   replacement lands.
 4. **Scripts with unresolvable inputs.** `which_cue.py` and `which_cue_exp.py`
    read `/tmp/gold16_txt/`; `archive/check_recommender_overlap.py` reads
    `/tmp/gold_verify_spans.csv` and a `gold25_backup_*.zip`; `review_lexicon.py`
