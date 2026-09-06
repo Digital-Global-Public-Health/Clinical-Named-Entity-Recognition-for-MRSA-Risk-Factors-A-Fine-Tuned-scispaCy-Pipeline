@@ -14,18 +14,24 @@ data/interim/airms/*.csv
 !data/interim/airms/notes/.gitkeep
 
 # Model checkpoints (large binaries)
-models/checkpoints/
-models/airms_ner_*/
+models/*
 !models/.gitkeep
 
 # Annotations (may contain PHI)
 annotations/*.jsonl
 annotations/*.spacy
+annotations/mock/
+# PHI-bearing preannotation output
+annotations/preannotations/
 !annotations/.gitkeep
 
 # Outputs (timestamped run dirs)
 outputs/*/
 !outputs/.gitkeep
+
+# PHI-bearing single-patient note extraction output
+data/interim/airms/extracted/
+outputs/extracted/
 
 # Conda / Python environments
 *.egg-info/
@@ -34,6 +40,7 @@ build/
 .eggs/
 env/
 venv/
+.venv/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -45,3 +52,25 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# PHI — annotation outputs (batch* and any future run dirs)
+annotations/batch*/
+**/annotations/batch*/
+annotations/p_w*/
+*.log
+*.bak
+
+# PHI — exported cohort note text
+test/
+batch01_patients.txt
+annotations/
+outputs/
+splits/*.spacy
+splits/manifest.csv
+splits/gold_candidates.csv
+dup_clusters.csv
+batch*_patients.txt
+*_run.log
+*.parquet
+*.tsv
+notebooks/

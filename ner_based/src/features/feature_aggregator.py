@@ -51,6 +51,8 @@ class NERAggregatorConfig:
         Include count_{label} columns.
     include_note_type_breakdown : bool
         Produce features split by NOTE_TYPE_CONCEPT_ID.
+    lookback_days : int
+        Parameterized lookback window for future leakage-gate filtering.
     fill_missing_with_zero : bool
         Fill NaN values with 0 after cohort merge.
     debug : bool
@@ -69,6 +71,7 @@ class NERAggregatorConfig:
     include_negated_features: bool = True
     include_entity_counts: bool = True
     include_note_type_breakdown: bool = False
+    lookback_days: int = 90
     fill_missing_with_zero: bool = True
     debug: bool = False
     debug_n_extractions: int = 1000
@@ -105,6 +108,15 @@ class NERFeatureAggregator:
         self.cfg = config
         self.run_dir = run_dir
         self.log = logger
+
+    def apply_leakage_gate_filter(self, extractions_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filter note/entity rows to the configured pre-index lookback window.
+
+        TODO: this needs the index date/index event definition from the supervisor
+        before it can be implemented without introducing target leakage.
+        """
+        raise NotImplementedError("blocked: needs index-event definition from supervisor")
 
     def load_extractions(self) -> pd.DataFrame:
         """

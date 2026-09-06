@@ -122,9 +122,18 @@ def save_config_snapshot(cfg: Dict[str, Any], run_dir: Path, fname: str = "confi
     """
     import yaml
 
+    def _yaml_safe(value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, dict):
+            return {key: _yaml_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_yaml_safe(item) for item in value]
+        return value
+
     path = run_dir / fname
     with open(path, "w") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False)
+        yaml.safe_dump(_yaml_safe(cfg), f, sort_keys=False)
     logger.info("Saved config snapshot → %s", path)
 
 

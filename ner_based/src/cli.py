@@ -15,6 +15,9 @@ Usage (from project root, with conda env activated):
     # Step 3 — annotate a sample for NER training (exports guidelines)
     python -m src.cli prepare-annotations [OPTIONS]
 
+    # Extract one patient's notes for pre-annotation
+    python -m src.cli extract-patient [OPTIONS]
+
     # Step 4 — train / fine-tune the NER model
     python -m src.cli train [OPTIONS]
 
@@ -33,6 +36,8 @@ Usage (from project root, with conda env activated):
 
 from __future__ import annotations
 
+import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -46,7 +51,26 @@ from src.cohort.cohort_builder import CohortConfig, CohortBuilder
 from src.preprocessing.note_preprocessor import NERPreprocessorConfig, NERNotePreprocessor
 from src.ner.annotation_schema import AnnotationSchemaConfig, AnnotationSchema
 from src.ner.model_trainer import NERTrainerConfig, NERModelTrainer
+from src.ner.mock_data import MockNERDataConfig, generate_mock_ner_data
 from src.ner.ner_extractor import NERExtractorConfig, NERExtractor
+from src.ner.extract_patient import (
+    DEFAULT_NOTE_TITLES,
+    DEFAULT_OUTPUT_PATH,
+    LOG as extract_patient_logger,
+    PatientExtractionError,
+    PatientNoteExtractionConfig,
+    extract_patient_notes,
+    parse_note_titles,
+)
+from src.ner.preannotate import (
+    OllamaClient,
+    OllamaConfig,
+    load_notes,
+    run_preannotation,
+    synthetic_canned_responses,
+    synthetic_fixture_notes,
+)
+from src.ner.preannotation_serializers import write_contract_docbin, write_webanno_tsv3
 from src.features.feature_aggregator import NERAggregatorConfig, NERFeatureAggregator
 from src.evaluation.evaluator import NEREvaluatorConfig, NEREvaluator
 
@@ -72,6 +96,26 @@ def _configure(
 ) -> None:
     """Global CLI options, logging setup, and seed initialization."""
     run_name = ctx.invoked_subcommand or "cli"
+    if run_name == "extract-patient":
+        numeric = getattr(logging, log_level.upper(), logging.INFO)
+        previous_level = extract_patient_logger.level
+        previous_propagate = extract_patient_logger.propagate
+        handler = logging.StreamHandler()
+        handler.setLevel(numeric)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        extract_patient_logger.setLevel(numeric)
+        extract_patient_logger.propagate = False
+        extract_patient_logger.addHandler(handler)
+
+        def _close_extract_patient_logging() -> None:
+            extract_patient_logger.removeHandler(handler)
+            handler.close()
+            extract_patient_logger.setLevel(previous_level)
+            extract_patient_logger.propagate = previous_propagate
+
+        ctx.call_on_close(_close_extract_patient_logging)
+        return
+
     run_dir = configure_logging(log_level, run_name=run_name)
     set_seed(seed)
     logger.info("Log level : %s", log_level.upper())
@@ -191,8 +235,11 @@ def prepare_annotations(
         False, "--include-severity", help="Add optional SEVERITY entity type."
     ),
     guidelines_out: Path = typer.Option(
-        Path("annotations/annotation_guidelines.md"),
-        help="Where to write the Markdown guidelines document.",
+        # Not docs/annotation_guidelines.md: that is the hand-written
+        # annotation standard. This command writes a generated entity-schema
+        # reference, and the two must not collide.
+        Path("annotations/schema_reference.md"),
+        help="Where to write the generated Markdown entity-schema reference.",
     ),
     schema_json_out: Optional[Path] = typer.Option(
         None, help="Where to write schema.json for annotation tools (optional)."
@@ -231,6 +278,161 @@ def prepare_annotations(
         logger.info("Schema JSON written to: %s", json_path)
 
     logger.info("Configured entity types: %s", schema.get_entity_labels())
+
+
+# ---------------------------------------------------------------------------
+# 3b. extract-patient
+# ---------------------------------------------------------------------------
+
+@app.command(
+    "extract-patient",
+    help="Extract one cohort patient's full notes for NER pre-annotation.",
+)
+def extract_patient(
+    notes_parquet: Path = typer.Option(
+        ...,
+        "--notes-parquet",
+        help="Cohort notes parquet containing PERSON_ID and clinical note columns.",
+    ),
+    cohort_csv: Path = typer.Option(
+        ...,
+        "--cohort-csv",
+        help="Cohort CSV containing PERSON_ID and LABEL.",
+    ),
+    person_id: str = typer.Option(
+        ...,
+        "--person-id",
+        help="Single PERSON_ID to extract; interpreted using the parquet PERSON_ID type.",
+    ),
+    note_titles: str = typer.Option(
+        ",".join(DEFAULT_NOTE_TITLES),
+        "--note-titles",
+        help="Comma-separated NOTE_TITLE values to retain.",
+    ),
+    output: Path = typer.Option(
+        DEFAULT_OUTPUT_PATH,
+        "--output",
+        help="Output parquet path. Existing files are replaced; directories are never removed.",
+    ),
+) -> None:
+    """Extract one patient's full notes with a read-time parquet filter."""
+    try:
+        titles = parse_note_titles(note_titles)
+        extract_patient_notes(
+            PatientNoteExtractionConfig(
+                notes_parquet=notes_parquet,
+                cohort_csv=cohort_csv,
+                person_ids=(person_id,),
+                note_titles=titles,
+                output=output,
+                require_cohort_membership=True,
+            )
+        )
+    except PatientExtractionError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# 3c. preannotate
+# ---------------------------------------------------------------------------
+
+@app.command(help="Ask Ollama for NER pre-annotations, verify spans, and export review artifacts.")
+@log_timing
+def preannotate(
+    input_path: Optional[Path] = typer.Option(
+        None,
+        "--input-path",
+        help="Note input file or directory: JSON, JSONL, TXT, or parquet. Not used with --synthetic-fixtures.",
+    ),
+    out_dir: Path = typer.Option(
+        Path("annotations/preannotations"),
+        help="Output directory for verified JSON, INCEpTION TSV, and CONTRACT.md artifacts.",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Ollama model name. Defaults to OLLAMA_MODEL from .env.",
+    ),
+    synthetic_fixtures: bool = typer.Option(
+        False,
+        "--synthetic-fixtures",
+        help="Run offline on synthetic notes with canned model responses; no Ollama server required.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite existing per-note JSON artifacts. Default is resume-safe skip.",
+    ),
+    write_inception: bool = typer.Option(
+        True,
+        "--write-inception/--no-write-inception",
+        help="Write INCEpTION-importable WebAnno TSV 3.3 files from verified JSON.",
+    ),
+    write_contract: bool = typer.Option(
+        True,
+        "--write-contract/--no-write-contract",
+        help="Write CONTRACT.md DocBin plus empty reserved sidecar from verified JSON.",
+    ),
+) -> None:
+    """
+    Pipeline Step 3b - LLM pre-annotation draft.
+
+    The LLM is only an assistant. Its strings are verified against the source
+    note before offsets are written. Gold annotation is spans and labels only.
+
+    Offline WSL smoke test:
+
+        python -m src.cli preannotate --synthetic-fixtures --out-dir annotations/preannotations/synthetic --overwrite
+
+    Real Minerva run:
+
+        python -m src.cli preannotate --input-path data/interim/airms/notes_preprocessed --out-dir annotations/preannotations/minerva --model "$OLLAMA_MODEL"
+    """
+    if synthetic_fixtures:
+        notes = synthetic_fixture_notes()
+        canned = synthetic_canned_responses()
+        client = None
+    else:
+        if input_path is None:
+            raise typer.BadParameter("--input-path is required unless --synthetic-fixtures is used")
+        notes = load_notes(input_path)
+        canned = None
+        client = OllamaClient(OllamaConfig.from_env(model=model))
+
+    save_config_snapshot(
+        {
+            "pipeline_step": "preannotate",
+            "input_path": input_path,
+            "out_dir": out_dir,
+            # `model` is None whenever the name comes from OLLAMA_MODEL, which
+            # is how the production runs were invoked -- so the silver corpus
+            # has no record of its teacher. Record what the client resolved.
+            # Both keys are kept so a --model that disagrees with the
+            # environment stays visible.
+            "model_requested": model,
+            "model_resolved": client.cfg.model if client is not None else None,
+            "synthetic_fixtures": synthetic_fixtures,
+            "overwrite": overwrite,
+            "write_inception": write_inception,
+            "write_contract": write_contract,
+        },
+        run_dir=_current_run_dir(),
+    )
+
+    totals = run_preannotation(
+        notes=notes,
+        out_dir=out_dir,
+        client=client,
+        canned_responses=canned,
+        overwrite=overwrite,
+    )
+    print(totals.format_block("Run total"))
+
+    if write_inception:
+        inception_summary = write_webanno_tsv3(out_dir / "verified", out_dir / "inception_webanno_tsv3")
+        print(inception_summary.format_block("WebAnno TSV stats"))
+    if write_contract:
+        write_contract_docbin(out_dir / "verified", out_dir / "contract_docbin")
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +600,11 @@ def aggregate_features(
         True, "--include-counts/--no-include-counts",
         help="Include count_{entity} features.",
     ),
+    lookback: int = typer.Option(
+        90,
+        "--lookback",
+        help="Pre-index lookback window in days for future leakage-gate filtering.",
+    ),
     debug: bool = typer.Option(False, "--debug/--no-debug"),
 ) -> None:
     """
@@ -416,6 +623,7 @@ def aggregate_features(
         aggregation_level=level,
         include_negated_features=include_negated,
         include_entity_counts=include_counts,
+        lookback_days=lookback,
         debug=debug,
     )
 
@@ -483,6 +691,7 @@ def run_pipeline(
     skip_preprocess: bool = typer.Option(False, "--skip-preprocess"),
     skip_train: bool = typer.Option(False, "--skip-train", help="Skip training (use existing model)."),
     skip_extract: bool = typer.Option(False, "--skip-extract"),
+    lookback: int = typer.Option(90, "--lookback", help="Pre-index lookback window in days."),
     debug: bool = typer.Option(False, "--debug/--no-debug"),
 ) -> None:
     """
@@ -508,7 +717,7 @@ def run_pipeline(
         logger.info("=== Step 3/5: train ===")
         schema_obj = AnnotationSchema(AnnotationSchemaConfig())
         NERModelTrainer(
-            NERTrainerConfig(model_track=model_track, debug=debug),
+            NERTrainerConfig(track=model_track, debug=debug),
             schema_obj,
             run_dir,
         ).run()
@@ -520,9 +729,79 @@ def run_pipeline(
         ext.run()
 
     logger.info("=== Step 5/5: aggregate-features ===")
-    NERFeatureAggregator(NERAggregatorConfig(debug=debug), run_dir).run()
+    NERFeatureAggregator(NERAggregatorConfig(debug=debug, lookback_days=lookback), run_dir).run()
 
     logger.info("NER pipeline complete.  Run dir: %s", run_dir)
+
+
+# ---------------------------------------------------------------------------
+# Mock Track A plumbing test
+# ---------------------------------------------------------------------------
+
+@app.command(help="Generate synthetic DocBins, train Track A, and evaluate on mock data.")
+@log_timing
+def mock_e2e(
+    annotations_dir: Path = typer.Option(
+        Path("annotations/mock"),
+        help="Directory for synthetic train/val/test DocBins and sidecar CSVs.",
+    ),
+    model_out_dir: Path = typer.Option(
+        Path("models/mock_airms_ner"),
+        help="Directory for the mock-trained spaCy model.",
+    ),
+    base_model: str = typer.Option(
+        "en_core_sci_sm",
+        help="Preferred spaCy/scispaCy base model; falls back to spacy.blank('en') if unavailable.",
+    ),
+    n_epochs: int = typer.Option(
+        5,
+        help="Small epoch count for mock plumbing only; do not treat mock metrics as model quality.",
+    ),
+    batch_size: int = typer.Option(2, help="Mini-batch size for mock training."),
+    dropout: float = typer.Option(0.2, help="Dropout for the mock training loop."),
+    seed: int = typer.Option(GLOBAL_SEED, help=f"Random seed (default: {GLOBAL_SEED})."),
+) -> None:
+    """
+    Run the local no-data Track A plumbing check.
+
+    This command creates synthetic notes only. It does not connect to HANA,
+    SSH, the cohort builder, Minerva, or any real patient data source.
+    """
+    run_dir = _current_run_dir()
+    paths = generate_mock_ner_data(MockNERDataConfig(out_dir=annotations_dir, seed=seed))
+
+    cfg = NERTrainerConfig(
+        track="spacy",
+        base_model=base_model,
+        train_data_path=paths["train_docbin"],
+        val_data_path=paths["val_docbin"],
+        test_data_path=paths["test_docbin"],
+        model_out_dir=model_out_dir,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        dropout=dropout,
+        eval_every_n_epochs=1,
+        min_f1_to_save=0.0,
+        early_stopping_patience=max(n_epochs + 1, 2),
+        device="cpu",
+        seed=seed,
+        debug=False,
+    )
+
+    save_config_snapshot(
+        {
+            **cfg.__dict__,
+            "pipeline_step": "mock_e2e",
+            "mock_annotations_dir": annotations_dir,
+            "mock_split_summary": paths["summary"],
+        },
+        run_dir,
+    )
+
+    schema = AnnotationSchema(AnnotationSchemaConfig())
+    trainer = NERModelTrainer(cfg, schema, run_dir)
+    trainer.run()
+    logger.info("Mock Track A run complete. Run dir: %s", run_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -536,5 +815,6 @@ def _current_run_dir() -> Path:
 
 
 if __name__ == "__main__":
-    configure_logging("INFO", run_name="cli")
+    if "extract-patient" not in sys.argv[1:]:
+        configure_logging("INFO", run_name="cli")
     app()

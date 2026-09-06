@@ -1,0 +1,86 @@
+gold: 16 docs, 1647 entities
+       {'DISEASE': 1034, 'PROCEDURE': 234, 'MEDICATION': 379}
+
+=== models/ner_2000  (16 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE        1034    383   0.728   0.270   0.394     0.909   0.337   0.491
+MEDICATION      379    295   0.864   0.673   0.757     0.895   0.697   0.783
+PROCEDURE       234    105   0.657   0.295   0.407     0.857   0.385   0.531
+OVERALL        1647    783   0.770   0.366   0.496     0.897   0.426   0.578
+
+=== models/ner_2000  [pilot, recommenders active]  (6 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE         368    139   0.734   0.277   0.402     0.986   0.372   0.540
+MEDICATION      147    119   0.874   0.707   0.782     0.908   0.735   0.812
+PROCEDURE        62     42   0.667   0.452   0.538     0.786   0.532   0.635
+OVERALL         577    300   0.780   0.406   0.534     0.927   0.482   0.634
+
+=== models/ner_2000  [extension, no assistance]  (10 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE         666    244   0.725   0.266   0.389     0.865   0.317   0.464
+MEDICATION      232    176   0.858   0.651   0.740     0.886   0.672   0.765
+PROCEDURE       172     63   0.651   0.238   0.349     0.905   0.331   0.485
+OVERALL        1070    483   0.764   0.345   0.475     0.878   0.396   0.546
+
+=== models/ner_5000  (16 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE        1034    379   0.760   0.279   0.408     0.879   0.322   0.471
+MEDICATION      379    300   0.883   0.699   0.781     0.893   0.707   0.789
+PROCEDURE       234    117   0.658   0.329   0.439     0.863   0.432   0.575
+OVERALL        1647    796   0.791   0.383   0.516     0.882   0.426   0.575
+
+=== models/ner_5000  [pilot, recommenders active]  (6 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE         368    131   0.748   0.266   0.393     0.954   0.340   0.501
+MEDICATION      147    119   0.891   0.721   0.797     0.899   0.728   0.805
+PROCEDURE        62     39   0.744   0.468   0.574     0.872   0.548   0.673
+OVERALL         577    289   0.806   0.404   0.538     0.920   0.461   0.614
+
+=== models/ner_5000  [extension, no assistance]  (10 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE         666    248   0.766   0.285   0.416     0.839   0.312   0.455
+MEDICATION      232    181   0.878   0.685   0.770     0.890   0.694   0.780
+PROCEDURE       172     78   0.615   0.279   0.384     0.859   0.390   0.536
+OVERALL        1070    507   0.783   0.371   0.503     0.860   0.407   0.553
+
+=== models/ner_10000  (16 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE        1034    495   0.747   0.358   0.484     0.889   0.426   0.576
+MEDICATION      379    286   0.843   0.636   0.725     0.916   0.691   0.788
+PROCEDURE       234     91   0.593   0.231   0.332     0.912   0.355   0.511
+OVERALL        1647    872   0.763   0.404   0.528     0.900   0.477   0.623
+
+=== models/ner_10000  [pilot, recommenders active]  (6 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE         368    182   0.764   0.378   0.505     0.967   0.478   0.640
+MEDICATION      147    118   0.915   0.735   0.815     0.958   0.769   0.853
+PROCEDURE        62     24   0.792   0.306   0.442     0.792   0.306   0.442
+OVERALL         577    324   0.821   0.461   0.590     0.951   0.534   0.684
+
+=== models/ner_10000  [extension, no assistance]  (10 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE         666    313   0.738   0.347   0.472     0.843   0.396   0.539
+MEDICATION      232    168   0.792   0.573   0.665     0.887   0.642   0.745
+PROCEDURE       172     67   0.522   0.203   0.293     0.955   0.372   0.536
+OVERALL        1070    548   0.728   0.373   0.493     0.870   0.446   0.590
+
+=== models/ner_full  (16 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE        1034    475   0.741   0.340   0.467     0.861   0.396   0.542
+MEDICATION      379    300   0.873   0.691   0.772     0.890   0.704   0.786
+PROCEDURE       234     96   0.740   0.303   0.430     0.906   0.372   0.527
+OVERALL        1647    871   0.786   0.416   0.544     0.876   0.463   0.606
+
+=== models/ner_full  [pilot, recommenders active]  (6 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE         368    178   0.725   0.351   0.473     0.921   0.446   0.601
+MEDICATION      147    125   0.904   0.769   0.831     0.912   0.776   0.838
+PROCEDURE        62     31   0.806   0.403   0.538     0.903   0.452   0.602
+OVERALL         577    334   0.799   0.463   0.586     0.916   0.530   0.672
+
+=== models/ner_full  [extension, no assistance]  (10 notes) ===
+label          gold   pred       P       R      F1        pP      pR     pF1
+DISEASE         666    297   0.751   0.335   0.463     0.825   0.368   0.509
+MEDICATION      232    175   0.851   0.642   0.732     0.874   0.659   0.752
+PROCEDURE       172     65   0.708   0.267   0.388     0.908   0.343   0.498
+OVERALL        1070    537   0.778   0.391   0.520     0.851   0.427   0.569

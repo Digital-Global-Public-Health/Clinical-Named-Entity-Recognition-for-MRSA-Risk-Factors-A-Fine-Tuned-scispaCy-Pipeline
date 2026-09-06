@@ -1,0 +1,823 @@
+# MRSA NER feature lexicon
+#
+# Maps extracted entity strings to 48 features: the 47 in
+# mrsa_ner_feature_list.xlsx, plus other_indwelling_device, which is
+# corpus-derived rather than literature-derived (see its own notes).
+#
+# THESE ARE SEED PATTERNS, NOT A FINISHED LEXICON. Every feature must be
+# reviewed against the corpus vocabulary with review_lexicon.py before use --
+# the corpus contains surface forms nobody predicts (av fistula 274, avf 211,
+# foley 608) and traps that only show up in review (the bare pattern `graft`
+# matched 400 occurrences of coronary graft and graft-versus-host disease).
+#
+# Schema per feature:
+#   name             snake_case id; becomes the column name in the matrix
+#   label            human-readable, from the spreadsheet
+#   entity_types     which NER labels may match; a term with the wrong label
+#                    is not a match (blocks `PROCEDURE: dialysis flush` from
+#                    matching a MEDICATION feature, and vice versa)
+#   temporality      required | ignored -- only 3 features need historical vs
+#                    current; the rest are presence-in-record
+#   include          regex alternatives, matched case-insensitively against the
+#                    lowercased span text
+#   exclude          regex; if any matches, the term is rejected even if
+#                    include matched
+#   notes            free text
+#
+# A term may map to several features (antibiotic class + any-antibiotic).
+# That is intended; the matrix has one column per feature.
+
+features:
+
+# ─────────────────────────────── DISEASE ───────────────────────────────
+
+  - name: prior_mrsa
+    label: Prior MRSA colonisation / infection
+    entity_types: [DISEASE]
+    temporality: required
+    include:
+      - '\bmrsa\b'
+      - 'methicillin[- ]resist'
+    exclude:
+      - '\bmssa\b'
+      - 'methicillin[- ]sensitive'
+      - 'methicillin[- ]suscept'
+    notes: >
+      Master list row 1, the leakage gate. Corpus: mrsa 1453, mrsa bacteremia
+      934, mrsa bsi 94, plus misspelling `mrsa bactermia` 17. Temporality
+      scores 38.7 F1, so this feature is the one materially degraded by the
+      assertion layer -- state that explicitly.
+
+  - name: chronic_wound
+    label: Decubitus / pressure ulcer / chronic wound
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'pressure (ulcer|sore|injury)'
+      - 'decubitus'
+      - 'bed ?sore'
+      - 'chronic wound'
+      - 'sacral ulcer'
+      - '(ischial|heel|trochanteric) ulcer'
+      - 'non[- ]healing wound'
+      - 'stage (i{1,3}v?|[1-4]) .*(ulcer|wound)'
+    exclude:
+      - 'surgical wound'
+      - 'wound care'
+    notes: >
+      Corpus: pressure ulcer 199, pressure ulcers 74, decubitus ulcer 69,
+      sacral decubitus ulcer 65. Stage variants are frequent -- check both
+      roman and arabic numerals.
+
+  - name: skin_soft_tissue_infection
+    label: Skin / soft-tissue infection, cellulitis, abscess
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'cellulitis'
+      - 'abscess'
+      - '\bssti\b'
+      - 'soft[- ]tissue infection'
+      - 'skin infection'
+      - 'furuncle|carbuncle|folliculitis'
+      - 'necrotizing fasciitis'
+      - 'phlegmon'
+      - 'wound infection'
+    exclude:
+      - 'dental abscess'
+    notes: >
+      Overlaps orbital cellulitis / pre-septal cellulitis in the gold notes.
+      `abscess` is frequently hedged (uncertain) -- the certainty axis matters
+      here even though temporality does not.
+
+  - name: renal_failure
+    label: Renal failure / ESRD / CKD
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - '\besrd\b'
+      - '\bckd\b|\bckd[1-5]\b'
+      - '\bcrf\b'
+      - '\baki\b'
+      - 'renal failure'
+      - 'kidney (failure|disease)'
+      - 'acute kidney injury'
+      - 'end[- ]stage renal'
+      - 'uremia|uraemic'
+    exclude: []
+    notes: 'Corpus: `esrd on dialysis` 81 also maps to dialysis_access.'
+
+  - name: prior_bacteremia
+    label: Prior bacteraemia / bloodstream infection
+    entity_types: [DISEASE]
+    temporality: required
+    include:
+      - 'bacter(a)?emia'
+      - '\bbsi\b'
+      - 'bloodstream infection'
+      - '\bclabsi\b'
+      - 'line infection'
+      - 'catheter[- ]related.*infection'
+    exclude: []
+    notes: 'Overlaps prior_mrsa for `mrsa bacteremia` 934 -- both fire, intended.'
+
+  - name: prior_sepsis
+    label: Prior sepsis / septic shock
+    entity_types: [DISEASE]
+    temporality: required
+    include:
+      - '\bsepsis\b'
+      - 'septic shock'
+      - 'severe sepsis'
+      - 'septic emboli'
+    exclude:
+      - 'septic arthritis'
+    notes: 'Consider whether septic emboli belongs here or under endocarditis.'
+
+  - name: endocarditis
+    label: Endocarditis
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'endocarditis'
+      - 'valvular vegetation'
+      - '\bvegetation\b'
+    exclude: []
+    notes: >
+      In the gold notes `valvular vegetation` is almost always negated
+      (TTE/TEE negative). Apply is_negated before setting the flag.
+
+  - name: osteomyelitis
+    label: Osteomyelitis
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'osteomyel'
+      - '\bosteo\b'
+      - 'discitis'
+      - 'spinal epidural abscess'
+    exclude: []
+    notes: '`vertebral osteo` and `clival osteomyelitis` both appear in gold.'
+
+  - name: pneumonia
+    label: Pneumonia / lower respiratory infection
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'pneumonia'
+      - '\bpna\b'
+      - '\bhcap\b|\bcap\b|\bvap\b|\bhap\b'
+      - 'lower respiratory.*infection'
+      - 'bronchitis'
+      - 'empyema'
+    exclude:
+      - 'pneumonitis'
+    notes: >
+      `pna` 798 occurrences added after review -- the standard abbreviation
+      was completely unclaimed, roughly a 30% increase to this feature.
+      Beware bare `cap` -- check the corpus for false positives.
+
+  - name: c_difficile
+    label: Clostridioides difficile infection
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'c\.? ?diff'
+      - 'clostrid'
+      - '\bcdi\b'
+      - 'pseudomembranous colitis'
+    exclude: []
+
+  - name: vre
+    label: VRE colonisation / infection
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - '\bvre\b'
+      - 'vancomycin[- ]resistant enterococc'
+    exclude: []
+
+  - name: diabetes
+    label: Diabetes mellitus
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'diabetes'
+      - '\bdm[12]?\b|\bt1dm\b|\bt2dm\b|\biddm\b|\bniddm\b'
+      - '\bdka\b|\bhhs\b'
+      - 'diabetic'
+      - 'hyperglycemi'
+    exclude:
+      - 'diabetes insipidus'
+    notes: >
+      `diabetes insipidus` is unrelated and must be excluded. Insulin is a
+      separate feature (insulin) and also a diabetes proxy -- do not merge.
+
+  - name: heart_failure
+    label: Congestive heart failure
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - '\bchf\b'
+      - 'heart failure'
+      - '\bhfref\b|\bhfpef\b'
+      - 'cardiomyopathy'
+      - 'pulmonary edema'
+    exclude: []
+    notes: 'Decide whether pulmonary edema belongs here or is too non-specific.'
+
+  - name: copd
+    label: COPD
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - '\bcopd\b'
+      - 'chronic obstructive'
+      - 'emphysema'
+      - 'chronic bronchitis'
+    exclude: []
+
+  - name: malnutrition
+    label: Malnutrition / debility / cachexia
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'malnutrition'
+      - 'cachexia|cachectic'
+      - 'protein[- ]calorie'
+      - '\bdebility\b|debilitated'
+      - 'failure to thrive'
+      - 'sarcopenia'
+    exclude: []
+    notes: '`Moderate/Severe protein-calorie malnutrition` appears in gold notes.'
+
+  - name: immunosuppressed_state
+    label: Transplant / immunosuppressed state
+    entity_types: [DISEASE, PROCEDURE]
+    temporality: ignored
+    include:
+      - 'immunosuppress|immunocompromis|immunodeficien'
+      - 'transplant'
+      - 'neutropeni'
+      - 'agranulocytosis'
+      - 'asplen'
+      - '\bgvhd\b|graft[- ]versus[- ]host'
+      - '\bscid\b|common variable immunodef'
+      - '\bolt\b|\bddkt\b|\blrkt\b|\bsot\b|\boht\b|\bolt\b'
+      - '\bbmt\b|\bhsct\b|\bsct\b|stem cell transplant'
+    exclude:
+      - 'transplant evaluation'
+      - 'transplant candidate'
+    notes: >
+      Immunosuppressant DRUGS are a separate feature; both may fire.
+      Added after review: `gvhd` 1086 occurrences was unclaimed -- it is
+      excluded from dialysis_access (correctly) but implies allogeneic
+      transplant and ongoing immunosuppression, so it belongs here.
+      NOT added: `itp` 1878 and `sarcoidosis` 1023. Both are usually
+      steroid-treated, but that is immunosuppression by treatment rather than
+      by definition -- the corticosteroid feature carries it.
+
+  - name: myocardial_infarction
+    label: Myocardial infarction
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'myocardial infarction'
+      - '\bmi\b'
+      - '\bstemi\b|\bnstemi\b'
+      - 'heart attack'
+    exclude:
+      - 'mitral'
+      - '\bmri\b'
+    notes: >
+      CAD patterns removed after review: `cad` 4410 + `coronary artery
+      disease` 873 + variants were ~4900 of 8450 occurrences, but CAD is a
+      chronic condition, not an infarction, and the parallel structured
+      feature (CCI_MI_90d) counts MI specifically. If a CAD feature is wanted
+      it should be its own column. Remaining: mi 1496, myocardial infarction
+      268, nstemi 209, heart attack 85. `Heart Attack` appears in a
+      family-history table in gold, so the experiencer axis matters here.
+
+  - name: peripheral_vascular_disease
+    label: Peripheral vascular disease
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'peripheral (vascular|arterial) disease'
+      - '\bpvd\b|\bpad\b'
+      - 'claudication'
+      - 'aortic aneurysm'
+    exclude: []
+
+  - name: cerebrovascular_disease
+    label: Cerebrovascular disease
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - '\bcva\b|\btia\b'
+      - 'stroke'
+      - 'cerebrovascular'
+      - 'intracranial h(a)?emorrhage|\bich\b'
+      - 'cerebral infarct'
+    exclude: []
+
+  - name: hemiplegia_paraplegia
+    label: Hemiplegia / paraplegia
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'hemipleg|hemipares'
+      - 'parapleg|quadripleg|tetrapleg'
+      - 'functional quadripleg'
+      - 'spinal cord injury'
+    exclude: []
+
+  - name: hiv_aids
+    label: HIV / AIDS
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - '\bhiv\b'
+      - '\baids\b'
+      - 'human immunodeficiency'
+    exclude:
+      - 'hearing aids?'
+      - 'first aid'
+    notes: >
+      `aids` needs the exclusions -- `hearing aids` is a real corpus term.
+      Antiretrovirals (Truvada, Isentress, Edurant) appear in gold as a
+      second signal; consider whether they should map here too.
+
+  - name: malignancy
+    label: Malignancy
+    entity_types: [DISEASE]
+    temporality: ignored
+    include:
+      - 'cancer|carcinoma|sarcoma|lymphoma|leukemi|melanoma|myeloma'
+      - 'malignan'
+      - 'metasta'
+      - 'neoplasm'
+      - '\bca-p\b|\baml\b|\bcll\b|\bcml\b'
+      - '\bdlbcl\b|\bnhl\b|\bhl\b|\bmds\b|\bmgus\b'
+      - '\batll\b|\bdcis\b|\blcis\b|\brcc\b|\bhcc\b'
+      - '\bca\b(?= *\(|$)|prostate ca|breast ca|lung ca'
+      - '\ball\b(?= *\()|acute lymphoblastic'
+      - 'angiomyolipoma'
+      - 'blast(s|ic)? crisis|myelofibrosis'
+    exclude:
+      - 'cancer screening'
+      - 'family history of cancer'
+      - 'cancer risk'
+    notes: >
+      Bare \bALL\b removed -- it matches the English word. Acute
+      lymphoblastic leukaemia is now caught by the spelled-out form or by
+      `ALL (` where an expansion follows. Added after review: `dlbcl` 1541
+      occurrences was completely unclaimed because the `lymphoma` pattern
+      does not match the acronym.
+
+# ───────────────────────────── MEDICATION ─────────────────────────────
+# Class features list member drug names, not just the class word. The corpus
+# names specific agents far more often than classes.
+
+  - name: vancomycin_glycopeptide
+    label: Vancomycin / glycopeptide
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'vancomycin|vanco\w*|\bvanc\b|vancocin'
+      - 'teicoplanin|telavancin|dalbavancin|oritavancin'
+      - 'glycopeptide'
+    exclude:
+      - 'vancomycin[- ]resistant'
+    notes: >
+      The exclude blocks VRE from firing this. Corpus shows vancomycin 22
+      times under an allergy header -- is_administered() must gate this.
+
+  - name: daptomycin
+    label: Daptomycin
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include: ['daptomycin', 'cubicin', '\bdapto\b']
+    exclude: []
+
+  - name: linezolid
+    label: Linezolid
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include: ['linezolid', 'zyvox', 'tedizolid', 'sivextro']
+    exclude: []
+    notes: >
+      Corpus: linezolid appears 56-58 times under allergy headers. Also the
+      student model failed to detect it in testing despite teacher coverage --
+      expect low recall on this feature.
+
+  - name: tmp_smx
+    label: Trimethoprim-sulfamethoxazole
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'sulfamethoxazole|trimethoprim'
+      - 'bactrim|septra'
+      - 'tmp[- ]?smx|smx[- ]?tmp'
+      - 'co[- ]?trimoxazole'
+    exclude: []
+    notes: '`sulfa` alone is usually an allergy entry -- 36 occurrences.'
+
+  - name: mupirocin
+    label: Mupirocin
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include: ['mupirocin', 'bactroban']
+    exclude: []
+    notes: 'Decolonisation proxy for prior MRSA (master list row 1).'
+
+  - name: beta_lactam
+    label: Beta-lactam (non-cephalosporin)
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'penicillin|\bpcn\b'
+      - 'amoxicillin|augmentin|ampicillin|unasyn'
+      - 'nafcillin|oxacillin|dicloxacillin'
+      - 'piperacillin|tazobactam|zosyn|zoysn'
+      - 'aztreonam'
+    exclude: []
+    notes: >
+      `zoysn` is a real corpus misspelling appearing alongside the correct
+      spelling in the same note. Corpus: penicillins 119 + pcn 60 under
+      allergy headers -- gate with is_administered().
+
+  - name: cephalosporin
+    label: Cephalosporin
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'cef[a-z]+|ceph[a-z]+'
+      - 'ancef|rocephin|maxipime|teflaro|keflex|fortaz|claforan'
+    exclude:
+      - 'cephalic'
+    notes: 'The cef/ceph prefix catches most agents; check for over-capture.'
+
+  - name: carbapenem
+    label: Carbapenem
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'meropenem|imipenem|ertapenem|doripenem'
+      - 'merrem|primaxin|invanz|recarbrio'
+      - 'carbapenem'
+    exclude: []
+
+  - name: fluoroquinolone
+    label: Fluoroquinolone
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'ciprofloxacin|\bcipro\b'
+      - 'levofloxacin|levaquin'
+      - 'moxifloxacin|avelox'
+      - 'ofloxacin|norfloxacin'
+      - 'fluoroquinolone|quinolone'
+    exclude: []
+    notes: 'Corpus: cipro 70 + ciprofloxacin hcl 48 under allergy headers.'
+
+  - name: antifungal
+    label: Antifungal
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'fluconazole|diflucan'
+      - 'voriconazole|posaconazole|itraconazole|isavuconazole'
+      - 'micafungin|caspofungin|anidulafungin'
+      - 'amphotericin|ambisome'
+      - 'nystatin|terbinafine'
+      - 'antifungal'
+    exclude: []
+
+  - name: corticosteroid
+    label: Corticosteroid
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'prednisone|prednisolone'
+      - 'methylprednisolone|solu[- ]?medrol|medrol'
+      - 'dexamethasone|decadron'
+      - 'hydrocortisone|solu[- ]?cortef'
+      - 'corticosteroid|\bsteroid'
+    exclude:
+      - 'anabolic steroid'
+    notes: >
+      Decide on inhaled/topical steroids (budesonide, fluticasone, triamcinolone
+      cream) -- systemic exposure is the risk factor, topical probably is not.
+
+  - name: immunosuppressant
+    label: Immunosuppressant
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'tacrolimus|prograf|cyclosporin|sirolimus|everolimus'
+      - 'mycophenolate|cellcept|myfortic'
+      - 'azathioprine|imuran'
+      - 'rituximab|infliximab|adalimumab|etanercept|tocilizumab'
+      - 'methotrexate|\bmtx\b'
+      - '\bfk\b|\bfk-?506\b'
+      - 'basiliximab|anti[- ]thymocyte|thymoglobulin'
+      - 'ipilimumab|nivolumab|\bipi\b|\bnivo\b'
+    exclude: []
+    notes: >
+      Checkpoint inhibitors (ipi/nivo) are immunomodulators rather than
+      classical immunosuppressants -- decide and document. Both appear in gold.
+
+  - name: anticoagulant
+    label: Anticoagulant
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'heparin|lovenox|enoxaparin|fondaparinux|arixtra'
+      - 'warfarin|coumadin'
+      - 'apixaban|eliquis|rivaroxaban|xarelto|dabigatran|pradaxa'
+      - 'argatroban|bivalirudin'
+    exclude:
+      - 'heparin flush'
+      - 'heparin lock'
+    notes: 'The excludes block line-maintenance flushes counting as therapy.'
+
+  - name: opioid
+    label: Opioid
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - 'morphine|ms[- ]?contin'
+      - 'oxycodone|oxycontin|percocet|roxicodone'
+      - 'hydromorphone|dilaudid|dailudid|diladudid'
+      - 'fentanyl|methadone|buprenorphine|suboxone'
+      - 'tramadol|codeine|hydrocodone|norco|vicodin'
+      - '\bopioid|\bopiate|\bopiods\b'
+    exclude: []
+    notes: >
+      Hydromorphone appears in FIVE surface forms across six gold notes
+      (dilaudid, Dilaudid, Dailudid, Diladudid, DILAUDID) and `opiods` is a
+      real misspelling. Corpus: morphine 305 and oxycodone 59 under allergy
+      headers -- the largest allergy-gated group.
+
+  - name: insulin
+    label: Insulin
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - '\binsulin\b'
+      - 'lantus|levemir|glargine|detemir|degludec|tresiba'
+      - 'humalog|novolog|lispro|aspart|glulisine'
+      - 'humulin|novolin|\bnph\b'
+      - '\biss\b'
+    exclude: []
+    notes: '`ISS` = insulin sliding scale, frequent in gold notes.'
+
+  - name: antibiotic_any
+    label: Any antibiotic exposure
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - '__ref__:vancomycin_glycopeptide'
+      - '__ref__:daptomycin'
+      - '__ref__:linezolid'
+      - '__ref__:tmp_smx'
+      - '__ref__:mupirocin'
+      - '__ref__:beta_lactam'
+      - '__ref__:cephalosporin'
+      - '__ref__:carbapenem'
+      - '__ref__:fluoroquinolone'
+      - 'azithromycin|zithromax|clarithromycin|erythromycin'
+      - 'clindamycin|cleocin'
+      - 'metronidazole|flagyl'
+      - 'gentamicin|tobramycin|amikacin'
+      - 'doxycycline|tetracycline|minocycline'
+      - 'rifampin|rifampicin'
+      - 'colistin|polymyxin|tigecycline'
+      - 'nitrofurantoin|macrobid'
+      - '\bantibiotic|\babx\b|antimicrobial'
+    exclude: []
+    notes: >
+      `__ref__:x` expands to the include patterns of feature x. Master list
+      row 10. Also catches the bare class terms (`IV abx`, `antimicrobial
+      therapy`) -- whether those should count is an open guideline decision.
+
+  - name: antibiotic_broad_spectrum
+    label: Broad-spectrum antibiotic exposure
+    entity_types: [MEDICATION]
+    temporality: ignored
+    include:
+      - '__ref__:carbapenem'
+      - '__ref__:vancomycin_glycopeptide'
+      - '__ref__:linezolid'
+      - '__ref__:daptomycin'
+      - 'piperacillin|tazobactam|zosyn|zoysn'
+      - 'cefepime|maxipime|ceftazidime|ceftaroline|teflaro'
+      - 'colistin|polymyxin|tigecycline'
+    exclude: []
+    notes: 'Define "broad-spectrum" in the methods; this list is a judgement call.'
+
+# ───────────────────────────── PROCEDURE ─────────────────────────────
+
+  - name: central_venous_catheter
+    label: Central venous catheter / CVC / PICC
+    entity_types: [PROCEDURE]
+    temporality: ignored
+    include:
+      - '\bpicc\b'
+      - '\bcvc\b'
+      - 'central line|central venous'
+      - 'hickman|broviac|port[- ]?a[- ]?cath|portacath'
+      - 'tunn?el(l)?ed .*(catheter|line)'
+      - 'triple lumen|double lumen|single lumen'
+      - 'cordis|introducer'
+    exclude:
+      - 'peripheral iv'
+      - '\bpiv\b'
+      - '\bmidline\b'
+      - 'peripheral(ly)? inserted midline'
+    notes: >
+      Corpus verified: picc 496, picc line 394, central line 95, port-a-cath
+      56, cvc 41, hickman 27, portacath 23. Master list row 15, aOR 35.3 --
+      one of the two highest-effect-size factors, and PROCEDURE recall is the
+      weakest label (38.03 F1 on the full model).
+
+  - name: urinary_catheter
+    label: Urinary catheter / Foley
+    entity_types: [PROCEDURE]
+    temporality: ignored
+    include:
+      - '\bfoley'
+      - 'urinary cath|indwelling cath'
+      - 'suprapubic (catheter|tube|cath)'
+      - 'condom cath|external urinary'
+      - 'straight cath|\bcic\b'
+    exclude:
+      - 'suprapubic pain'
+      - 'suprapubic tenderness'
+    notes: >
+      Corpus verified: foley 608, suprapubic catheter 162, foley catheter 137,
+      external urinary catheter 43. The exclude blocks `suprapubic pain` 6,
+      which is a DISEASE. Master list row 16, aOR 37.1 -- highest in the table.
+
+  - name: mechanical_ventilation
+    label: Mechanical ventilation / intubation
+    entity_types: [PROCEDURE]
+    temporality: ignored
+    include:
+      - 'intubat|extubat'
+      - 'mechanical ventilat|\bmech vent\b'
+      - 'endotracheal tube|\bett\b'
+      - 'ventilator'
+    exclude:
+      - 'non[- ]invasive ventilat'
+      - '\bbipap\b|\bcpap\b'
+    notes: >
+      Excludes NIV deliberately -- invasive ventilation is the risk factor.
+      Reconsider if the parallel structured feature (obs_invasive_vent) is
+      defined differently.
+
+  - name: tracheostomy
+    label: Tracheostomy
+    entity_types: [PROCEDURE]
+    temporality: ignored
+    include:
+      - 'tracheostom|\btrach\b'
+      - 'tracheotomy'
+    exclude:
+      - 'tracheal deviation'
+    notes: 'Bare `trach` is common shorthand; verify against corpus review.'
+
+  - name: dialysis_access
+    label: Haemodialysis / dialysis access
+    entity_types: [PROCEDURE]
+    temporality: ignored
+    include:
+      - 'h(a)?emodialysis|\bhd\b'
+      - '\bdialysis\b'
+      - '\bcrrt\b|\bcvvh'
+      - 'av fistula|\bavf\b|arteriovenous fistula'
+      - 'av graft|dialysis graft|\bavg\b'
+      - 'dialysis catheter|permcath|perm[- ]?a[- ]?cath|vas[- ]?cath'
+      - 'peritoneal dialysis|\bpd cath'
+    exclude:
+      - 'graft[- ]versus[- ]host'
+      - 'coronary .*graft'
+      - 'bypass graft'
+      - 'dialysis flush'
+      - 'hd[- ]?mtx'
+      - 'hd[- ]?methotrexate'
+    notes: >
+      THE EXCLUDES ARE ESSENTIAL. A bare `graft` pattern matched 400
+      occurrences of coronary atherosclerosis ... native or graft (216),
+      bypass graft aorto-femoral (100) and acute graft-versus-host disease
+      (84). Corpus verified: dialysis 832, hemodialysis 542, av fistula 274,
+      avf 211. Bare `\bhd\b` is risky -- review it.
+
+  - name: wound_care_debridement
+    label: Wound care / debridement
+    entity_types: [PROCEDURE]
+    temporality: ignored
+    include:
+      - 'debridement|debride'
+      - 'wound care|wound vac|\bnpwt\b'
+      - 'incision and drainage|\bi ?& ?d\b'
+      - 'dressing change'
+      - 'skin graft|flap'
+    exclude: []
+
+  - name: surgery
+    label: Surgery / surgical site infection
+    entity_types: [PROCEDURE, DISEASE]
+    temporality: ignored
+    include:
+      - 'surgery|surgical'
+      - '\boperative\b|\bintraoperative\b'
+      - 'resection|excision|amputation|arthroplasty'
+      - 'laparotomy|laparoscop|thoracotomy|craniotomy|craniectomy|sternotomy'
+      - '(ectomy|plasty)\b'
+      - 'surgical site infection|\bssi\b'
+      - 'post[- ]operative wound'
+      - '\bcabg\b|\bpci\b|\bavr\b|\bmvr\b|\btavr\b'
+      - '\bbka\b|\baka\b'
+    exclude:
+      - 'surgical history'
+      - 'no surgery'
+      - 'phlebotomy'
+      - 'postoperative|post[- ]op\b'
+      - '\bdonor\b'
+      - 'tracheostomy'
+    notes: >
+      Two entity types because surgical site infection is a DISEASE while the
+      operation is a PROCEDURE.
+
+      Review fixes: the bare `otomy` suffix caught `phlebotomy` 38 (a blood
+      draw) and is dropped; `operative` matched inside `postoperative`, so
+      `seroma, postoperative` 189 and `postoperative pain` 51 -- both DISEASE
+      complications, not operations -- are now excluded; `donor cardiectomy`
+      73 is another patient's procedure; bare `\bor\b` removed as
+      over-broad. `postoperative wound` is retained via its own pattern
+      because it is a wound-care signal.
+
+      OPEN DECISION: with temporality ignored, `hysterectomy` 190,
+      `tonsillectomy` 41 and `hx toe amputation` 120 all count as surgery
+      regardless of when they happened. The parallel structured feature is
+      has_surgical_procedure_90d. Either set temporality: required here and
+      accept 38.7 F1 on that axis, or state in the methods that this feature
+      is ever-in-record and not window-comparable.
+
+  - name: supplemental_oxygen
+    label: Supplemental oxygen
+    entity_types: [PROCEDURE]
+    temporality: ignored
+    include:
+      - 'supplemental o2|supplemental oxygen'
+      - 'nasal cannula|nasal canula|\bnc\b'
+      - '\bhfnc\b|high[- ]flow'
+      - 'non[- ]rebreather|\bnrb\b'
+      - 'venturi mask|face mask oxygen'
+      - '\bo2\b (via|by|at)'
+    exclude:
+      - '\bbipap\b|\bcpap\b'
+      - 'no complaints'
+    notes: >
+      CPAP and BiPAP removed after review: they deliver positive pressure,
+      frequently on room air, so they are not supplemental oxygen under this
+      feature's own definition. They were 1243 of 1525 occurrences (cpap 671,
+      bipap 572), so this feature is now ~280 occurrences and genuinely means
+      what it says. If non-invasive ventilation is wanted it should be its own
+      feature -- a decision for the feature list, not this file.
+      `nasal canula` is a corpus misspelling. Bare `\bnc\b` is retained but
+      `no complaints` is excluded.
+
+  - name: other_indwelling_device
+    label: Other indwelling device (corpus-derived, not literature-derived)
+    entity_types: [PROCEDURE]
+    temporality: ignored
+    include:
+      - '\blvad\b|\brvad\b|\bbivad\b|ventricular assist'
+      - '\bpeg\b|gastrostomy|\bgtube\b|\bg[- ]tube\b|jejunostomy|\bj[- ]tube\b'
+      - '\bngt\b|nasogastric|\bogt\b|orogastric'
+      - 'chest tube|thoracostomy|\bpleurx\b'
+      - '\bjp drain\b|\bdrain\b|penrose'
+      - '\btpn\b|parenteral nutrition'
+      - 'colostomy|ileostomy|urostomy|\bostomy\b'
+      - 'ventriculoperitoneal|\bvp shunt\b|\bevd\b'
+      - 'ureteral stent|nephrostomy|biliary stent|\bptbd\b'
+    exclude:
+      - 'drainage of'
+      - 'no drain'
+    notes: >
+      PROVENANCE DIFFERS FROM FEATURES 1-47. Those come from the risk-factor
+      literature review; this one is corpus-derived. The corpus contains ~2,700
+      mentions of indwelling hardware with no home in the reviewed feature set
+      (lvad 740, peg 690, rvad 476, chest tube 861, ngt 352, tpn 330). The
+      mechanism is supported -- an indwelling foreign body is a portal of entry,
+      and TPN requires central access -- but MRSA-specific effect sizes are not
+      established per device, which is why they are pooled into one column
+      rather than split. State this distinction in the methods.
+
+      entity_types is PROCEDURE-only, which is load-bearing: `peg` would
+      otherwise match `polyethylene glycol` (1486 occurrences, MEDICATION).
+      Central lines, urinary catheters, dialysis access, tracheostomy and
+      ventilation have their own features and are not duplicated here.
