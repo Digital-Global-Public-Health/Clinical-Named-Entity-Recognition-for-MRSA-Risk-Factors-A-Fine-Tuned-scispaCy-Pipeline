@@ -1,3 +1,26 @@
+"""Measure how many gold spans originated as accepted recommender suggestions.
+
+INCEpTION's recommenders were active while the six pilot notes were annotated
+and switched off for the ten extension notes. If a large share of pilot gold
+spans came from clicking "accept" on a machine suggestion, the pilot half is not
+an independent standard and cannot be pooled with the extension half.
+
+Joins the project export's ``learning_records`` (action ``ACCEPTED``) against the
+gold span dump on (note_id, start, end, label), and separately reports how many
+accepted spans were repeat occurrences of a text already annotated in that note.
+
+Used 2026-08-29, when the gold set was extended from 6 to 16 notes. This is why
+``eval_gold.py --split`` reports pilot and extension separately rather than only
+the pooled figure.
+
+Reads ``/tmp/gold_verify_spans.csv`` and the newest ``gold25_backup_*.zip`` in
+the working directory. Neither is produced by anything in this repository; both
+were enclave-local at the time.
+
+RUN ON A MINERVA COMPUTE NODE. Reads span text (PHI).
+"""
+
+
 import json, zipfile, sys, glob
 import pandas as pd
 from collections import Counter

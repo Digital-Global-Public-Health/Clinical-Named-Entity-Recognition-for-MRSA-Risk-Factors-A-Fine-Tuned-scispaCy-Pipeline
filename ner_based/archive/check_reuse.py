@@ -1,3 +1,20 @@
+"""Plan the gold-set extension: what can be reused, and from which patients.
+
+The gold set was extended from the six pilot notes to sixteen, structured as
+four test-split patients x four note types. Annotating four fresh patients would
+have discarded the pilot work, so this reports which of the six existing notes
+fall inside a candidate patient x type grid, which test patients carry all four
+note types at all, and which triple of patients maximises reuse.
+
+Used 2026-08-29. Its output chose the patients that ``draw_new_gold.py`` then
+drew from.
+
+Patient identifiers are pseudonymised to P01..Pnn before printing, so no
+PERSON_ID reaches stdout. Reads ``splits/manifest.csv``, which stays on the
+enclave.
+"""
+
+
 import pandas as pd
 from itertools import combinations
 

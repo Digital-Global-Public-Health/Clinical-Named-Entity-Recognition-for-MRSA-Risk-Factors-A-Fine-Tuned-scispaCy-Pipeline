@@ -1,3 +1,23 @@
+"""Attribute each experiencer false positive to the ConText cue that caused it.
+
+The experiencer counterpart of ``which_cue.py``: for every entity the layer
+marks ``is_family`` where gold does not, count the literal of each attached
+modifier. It differs from ``which_cue.py`` in skipping ``tok2vec`` as well as
+``ner`` when replaying the pipeline, and in printing the note id when a span set
+cannot be filtered rather than silently continuing.
+
+Used 2026-08-31. This is what identified medspaCy's bare ``family`` cue as the
+dominant source -- it fires on provenance lines such as "Source: Patient, Family
+and Team" and then scopes forward across the flattened export into unrelated
+sections. The rule is now disabled via ``PACKAGED_RULE_FIXES`` in
+``src/ner/assertion.py``.
+
+Same enclave-scratch inputs as ``which_cue.py``.
+
+RUN ON A MINERVA COMPUTE NODE. Reads note text (PHI).
+"""
+
+
 import pandas as pd, spacy
 from src.ner.assertion import build_assertion_pipeline
 

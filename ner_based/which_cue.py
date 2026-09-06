@@ -1,3 +1,22 @@
+"""Attribute each hypothetical false positive to the ConText cue that caused it.
+
+Gold spans are injected directly as ``doc.ents`` and every pipe except ``ner``
+is run over them, so this measures the cue set in isolation from NER recall.
+For each entity the layer marks ``is_hypothetical`` where gold does not, the
+literal of every modifier attached to it is counted.
+
+Used 2026-08-31. The counts identified which cues were over-scoping and informed
+the backward scope caps now on the hypothetical rules in ``src/ner/assertion.py``.
+``which_cue_exp.py`` is the same script for the experiencer axis.
+
+Expects ``/tmp/gold6_spans.csv`` from ``project6_to_spans.py`` and one
+``<note_id>.txt`` per gold note under ``/tmp/gold16_txt``; neither is produced
+by anything in this repository -- both were enclave scratch files.
+
+RUN ON A MINERVA COMPUTE NODE. Reads note text (PHI).
+"""
+
+
 import pandas as pd, spacy
 from src.ner.assertion import build_assertion_pipeline
 

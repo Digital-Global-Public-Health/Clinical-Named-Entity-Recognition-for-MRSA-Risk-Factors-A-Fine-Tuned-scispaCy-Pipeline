@@ -1,3 +1,19 @@
+"""Draw the ten extension notes for the 16-note gold set.
+
+Takes the patients ``check_reuse.py`` selected, and for every (patient, note
+type) cell not already covered by one of the six pilot notes, draws one note at
+random from the test split. Seed 7, sorted candidate pool, so the draw is
+reproducible; a cell with only one candidate is drawn anyway and flagged as
+forced.
+
+Used 2026-08-29. Wrote ``splits/new_gold_10.csv``, the list that was then
+annotated in INCEpTION and became the extension half of the gold set.
+
+Patient identifiers are pseudonymised to P01..Pnn before printing. Reads
+``splits/manifest.csv``, which stays on the enclave.
+"""
+
+
 import pandas as pd
 import numpy as np
 

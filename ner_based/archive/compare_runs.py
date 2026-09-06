@@ -1,3 +1,18 @@
+"""Compare two teacher models' pre-annotations span-for-span.
+
+Run before committing GPU time to pre-annotating the full corpus: how much do
+``llama3.1:70b`` and ``gemma3:27b`` actually disagree? Reports per note the
+spans both found, the spans unique to each, and their Jaccard overlap, matching
+on (lowercased text, label) rather than offsets so tokenization differences do
+not count as disagreement.
+
+Used 2026-08-10. llama was kept as the teacher. ``procedure_gap.py`` is the same
+comparison narrowed to PROCEDURE, the label the two models diverged on most.
+
+Both smoke-run directories it reads are enclave-local and gitignored.
+"""
+
+
 import json
 from pathlib import Path
 

@@ -1,3 +1,18 @@
+"""Extract every note for every cohort patient into one parquet.
+
+Pipeline stage 0. Wraps ``src.ner.extract_patient.extract_patient_notes`` with
+the full cohort PERSON_ID tuple instead of a single patient, producing the
+corpus that pre-annotation, split building, and the feature matrix all read.
+
+Run once on Minerva, 2026-08-10. The 50-patient cohort yields ~20,951 notes; the
+script prints the total and the breakdown by NOTE_TITLE so the count can be
+checked against the expected figure. Source and destination paths are hardcoded
+to the enclave filesystem.
+
+RUN ON A MINERVA COMPUTE NODE. Input and output are note text (PHI).
+"""
+
+
 from pathlib import Path
 import pandas as pd
 from src.ner.extract_patient import PatientNoteExtractionConfig, extract_patient_notes

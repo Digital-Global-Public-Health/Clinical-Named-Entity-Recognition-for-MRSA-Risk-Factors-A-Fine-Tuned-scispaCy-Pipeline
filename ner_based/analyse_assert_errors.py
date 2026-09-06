@@ -1,3 +1,21 @@
+"""Break down assertion disagreements by note type, label, and cue.
+
+Reads the disagreement CSV written by ``score_assertions.py --errors-csv`` and
+answers three questions that the aggregate per-axis F1 hides: whether
+temporality fails on a particular note type, which entity strings drive the
+experiencer false positives, and which gold hypothetical spans were missed
+outright.
+
+Used 2026-08-31 during the assertion tuning pass. The ``TYPE`` map is the 16
+notes of the gold set, hardcoded because the note-type column lives in
+``splits/manifest.csv``, which stays on the enclave. The input path is likewise
+hardcoded to ``/tmp/assert_errors.csv``; pass ``--errors-csv`` to that path when
+running ``score_assertions.py``.
+
+RUN ON A MINERVA COMPUTE NODE. The disagreement CSV contains span text (PHI).
+"""
+
+
 import pandas as pd
 
 TYPE = {

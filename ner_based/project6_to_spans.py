@@ -1,3 +1,22 @@
+"""Parse the INCEpTION project 6 export into a gold assertion span CSV.
+
+Project 6 holds the gold spans re-typed onto ``webanno.custom.Assertion`` by
+``rewrite_tsv_layer.py``, so each token row carries six feature columns rather
+than the built-in layer's one. This reads the column names from the ``#T_SP=``
+header instead of assuming positions, merges multi-token spans by the ``[n]``
+disambiguation id shared across their rows, and emits one row per span with all
+five attribute values.
+
+Used 2026-08-29, after the assertion annotation pass. The output is the gold
+attribute set that ``which_cue.py`` and ``which_cue_exp.py`` score against;
+``score_assertions.py`` parses the same export independently and does not read
+this file.
+
+RUN ON A MINERVA COMPUTE NODE. The output CSV contains span text (PHI) and is
+written to /tmp deliberately, so it is never inside the repository.
+"""
+
+
 import zipfile, glob, re, csv, sys
 from collections import defaultdict, Counter
 

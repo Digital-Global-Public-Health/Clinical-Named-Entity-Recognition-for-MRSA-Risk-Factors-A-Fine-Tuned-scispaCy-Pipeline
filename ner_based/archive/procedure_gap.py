@@ -1,3 +1,21 @@
+"""Compare two teacher models on PROCEDURE spans specifically.
+
+The label the two candidate teachers disagreed on most, and the one that matters
+most here: indwelling devices and lines are the primary MRSA acquisition route,
+so a teacher that systematically misses them caps the student's recall on the
+features the thesis is about.
+
+Unlike ``compare_runs.py``, this matches on offset overlap rather than exact
+text, and de-duplicates by span text so a term repeated through a note does not
+pad the lists. Prints, per note, what both models found, what gemma missed, and
+what only gemma found.
+
+Used 2026-08-10, alongside ``compare_runs.py``. llama was kept as the teacher.
+
+Both smoke-run directories it reads are enclave-local and gitignored.
+"""
+
+
 import json
 from pathlib import Path
 
